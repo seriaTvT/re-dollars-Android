@@ -60,4 +60,10 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // 3.3.0 is the newest Coil that depends on kotlin-stdlib 2.2.x (readable by the
+    // Kotlin 2.2.20 compiler); 3.4+ pulls stdlib 2.4.0 and fails to compile.
+    implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.3.0")
+    implementation("io.coil-kt.coil3:coil-gif:3.3.0")
 }
