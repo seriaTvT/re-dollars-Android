@@ -51,6 +51,20 @@ data class MessageDto(
     val color: String? = null,
     val type: String = "text",
     @SerialName("is_deleted") val isDeleted: Boolean = false,
+    @SerialName("reply_details") val replyDetails: ReplyDetails? = null,
+)
+
+/**
+ * A reply's quoted source. On dollars, a reply body is `[quote=<id>][/quote]<text>`
+ * (empty inline quote); the actual quoted author/content arrives here instead.
+ */
+@Serializable
+data class ReplyDetails(
+    val uid: Long = 0,
+    val nickname: String = "",
+    val avatar: String = "",
+    val content: String = "",
+    val firstImage: String? = null,
 )
 
 @Serializable
