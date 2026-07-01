@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.foundation.text.InlineTextContent
@@ -19,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -33,11 +36,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import coil3.compose.AsyncImage
+import mk.ry.redollars.spike.net.ReplyDetails
 
 // ---------------------------------------------------------------------------
 // Block-level parsing
@@ -82,7 +87,9 @@ private fun parseBlocks(message: String): List<Block> {
         val g = m.groups
         when {
             g[1] != null -> addImage(g[1]!!.value, betweenBlank)
-            g[3] != null -> out.add(QuoteBlock(g[3]!!.value))
+            // Reply quotes are empty inline (content lives in reply_details, rendered
+            // as a ReplyHeader), so only keep quotes that actually carry text.
+            g[3] != null -> if (g[3]!!.value.isNotBlank()) out.add(QuoteBlock(g[3]!!.value))
             g[4] != null -> out.add(CodeBlock(g[4]!!.value))
             g[5] != null -> out.add(LinkBlock("[视频]", g[5]!!.value.trim()))
             g[6] != null -> out.add(LinkBlock("[音频]", g[6]!!.value.trim()))
@@ -299,4 +306,63 @@ private fun LinkLine(label: String, url: String) {
         }
     }
     Text(anno, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 2.dp))
+}
+
+/** One-line preview of quoted content: media -> placeholders, other bbcode stripped. */
+private fun previewText(content: String): String = content
+    .replace(Regex("\\[img\\][\\s\\S]*?\\[/img\\]", RegexOption.IGNORE_CASE), "[图片]")
+    .replace(Regex("\\[video\\][\\s\\S]*?\\[/video\\]", RegexOption.IGNORE_CASE), "[视频]")
+    .replace(Regex("\\[audio\\][\\s\\S]*?\\[/audio\\]", RegexOption.IGNORE_CASE), "[音频]")
+    .replace(Regex("\\[file=[^\\]]*\\][\\s\\S]*?\\[/file\\]", RegexOption.IGNORE_CASE), "[附件]")
+    .replace(Regex("\\[/?[a-zA-Z][^\\]]*\\]"), "")
+    .replace(Regex("\\s+"), " ")
+    .trim()
+    .take(80)
+
+/** Compact reply preview rendered from reply_details (mirrors the userscript). */
+@Composable
+fun ReplyHeader(reply: ReplyDetails, modifier: Modifier = Modifier) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        modifier
+            .padding(bottom = 3.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(cs.surfaceVariant)
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.width(3.dp).fillMaxHeight().background(cs.primary)) {}
+        val thumb = reply.firstImage
+        if (!thumb.isNullOrBlank()) {
+            AsyncImage(
+                model = thumb,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.padding(start = 6.dp).size(28.dp).clip(RoundedCornerShape(4.dp)),
+            )
+        } else {
+            AsyncImage(
+                model = avatarUrl(reply.avatar, 's'),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.padding(start = 6.dp).size(20.dp).clip(CircleShape),
+            )
+        }
+        Column(Modifier.padding(horizontal = 6.dp, vertical = 4.dp)) {
+            Text(
+                text = reply.nickname,
+                style = MaterialTheme.typography.labelMedium,
+                color = cs.primary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = previewText(reply.content),
+                style = MaterialTheme.typography.bodySmall,
+                color = cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 }

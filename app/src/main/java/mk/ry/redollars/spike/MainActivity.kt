@@ -55,6 +55,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import mk.ry.redollars.spike.net.MessageDto
 import mk.ry.redollars.spike.ui.render.BBCodeMessage
+import mk.ry.redollars.spike.ui.render.ReplyHeader
 import mk.ry.redollars.spike.ui.render.avatarUrl
 import java.time.Instant
 import java.time.ZoneId
@@ -256,6 +257,7 @@ private fun MessageRow(m: MessageDto) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             } else {
+                m.replyDetails?.let { ReplyHeader(it, Modifier.fillMaxWidth()) }
                 BBCodeMessage(m.message)
             }
         }
