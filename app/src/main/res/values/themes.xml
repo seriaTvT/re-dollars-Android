@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Compose supplies the real theming (MaterialTheme + dynamic color).
+         The Activity just needs a no-action-bar framework theme. -->
+    <style name="Theme.RedollarsSpike" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
