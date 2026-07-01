@@ -46,13 +46,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil3.compose.AsyncImage
 import mk.ry.redollars.spike.net.MessageDto
+import mk.ry.redollars.spike.ui.render.BBCodeMessage
+import mk.ry.redollars.spike.ui.render.avatarUrl
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -223,25 +226,39 @@ private fun MessageRow(m: MessageDto) {
         runCatching { Color(android.graphics.Color.parseColor(m.color)) }
             .getOrDefault(Color.Unspecified)
     }
-    Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = m.nickname.ifBlank { "uid ${m.uid}" },
-                fontWeight = FontWeight.SemiBold,
-                color = nameColor,
-                fontSize = 13.sp,
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                text = timeFmt.format(Instant.ofEpochSecond(m.timestamp)),
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Text(
-            text = if (m.isDeleted) "(deleted)" else m.message,
-            style = MaterialTheme.typography.bodyMedium,
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        AsyncImage(
+            model = avatarUrl(m.avatar, 's'),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(36.dp).clip(CircleShape),
         )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = m.nickname.ifBlank { "uid ${m.uid}" },
+                    fontWeight = FontWeight.SemiBold,
+                    color = nameColor,
+                    fontSize = 13.sp,
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = timeFmt.format(Instant.ofEpochSecond(m.timestamp)),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (m.isDeleted) {
+                Text(
+                    text = "(deleted)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                BBCodeMessage(m.message)
+            }
+        }
     }
 }
 

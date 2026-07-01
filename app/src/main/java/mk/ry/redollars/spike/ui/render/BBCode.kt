@@ -1,0 +1,302 @@
+package mk.ry.redollars.spike.ui.render
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.appendInlineContent
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.em
+import coil3.compose.AsyncImage
+
+// ---------------------------------------------------------------------------
+// Block-level parsing
+// ---------------------------------------------------------------------------
+
+private sealed interface Block
+private data class TextBlock(val text: String) : Block
+private data class ImageBlock(val urls: List<String>) : Block
+private data class QuoteBlock(val inner: String) : Block
+private data class CodeBlock(val content: String) : Block
+private data class LinkBlock(val label: String, val url: String) : Block
+
+private val BLOCK_REGEX = Regex(
+    "\\[img\\]([\\s\\S]+?)\\[/img\\]" +                        // 1
+        "|\\[quote(?:=(\\d+))?\\]([\\s\\S]*?)\\[/quote\\]" +   // 2 id, 3 body
+        "|\\[code\\]([\\s\\S]*?)\\[/code\\]" +                 // 4
+        "|\\[video\\]([\\s\\S]+?)\\[/video\\]" +               // 5
+        "|\\[audio\\]([\\s\\S]+?)\\[/audio\\]" +               // 6
+        "|\\[file=([^\\]]*)\\]([\\s\\S]+?)\\[/file\\]",        // 7 name, 8 url
+    RegexOption.IGNORE_CASE,
+)
+
+private fun parseBlocks(message: String): List<Block> {
+    val out = ArrayList<Block>()
+    var cursor = 0
+
+    fun addImage(url: String, gluedToPrev: Boolean) {
+        val prev = out.lastOrNull()
+        if (gluedToPrev && prev is ImageBlock) {
+            out[out.size - 1] = ImageBlock(prev.urls + url.trim())
+        } else {
+            out.add(ImageBlock(listOf(url.trim())))
+        }
+    }
+
+    for (m in BLOCK_REGEX.findAll(message)) {
+        val between = message.substring(cursor, m.range.first)
+        val betweenBlank = between.isBlank()
+        if (!betweenBlank) out.add(TextBlock(between))
+        cursor = m.range.last + 1
+
+        val g = m.groups
+        when {
+            g[1] != null -> addImage(g[1]!!.value, betweenBlank)
+            g[3] != null -> out.add(QuoteBlock(g[3]!!.value))
+            g[4] != null -> out.add(CodeBlock(g[4]!!.value))
+            g[5] != null -> out.add(LinkBlock("[视频]", g[5]!!.value.trim()))
+            g[6] != null -> out.add(LinkBlock("[音频]", g[6]!!.value.trim()))
+            g[8] != null -> out.add(LinkBlock(g[7]?.value?.trim().orEmpty().ifEmpty { "[附件]" }, g[8]!!.value.trim()))
+        }
+    }
+    if (cursor < message.length) {
+        val tail = message.substring(cursor)
+        if (tail.isNotBlank()) out.add(TextBlock(tail))
+    }
+    if (out.isEmpty()) out.add(TextBlock(message))
+    return out
+}
+
+private fun simplifyQuoteInner(s: String): String = s
+    .replace(Regex("\\[img\\][\\s\\S]*?\\[/img\\]", RegexOption.IGNORE_CASE), "[图片]")
+    .replace(Regex("\\[video\\][\\s\\S]*?\\[/video\\]", RegexOption.IGNORE_CASE), "[视频]")
+    .replace(Regex("\\[audio\\][\\s\\S]*?\\[/audio\\]", RegexOption.IGNORE_CASE), "[音频]")
+    .replace(Regex("\\[file=[^\\]]*\\][\\s\\S]*?\\[/file\\]", RegexOption.IGNORE_CASE), "[附件]")
+    .trim()
+
+// ---------------------------------------------------------------------------
+// Inline parsing (styles, links, mentions, smilies)
+// ---------------------------------------------------------------------------
+
+private enum class St { BOLD, ITALIC, UNDERLINE, STRIKE, MASK, LINK }
+
+private val INLINE_REGEX = Regex(
+    "\\[b\\]([\\s\\S]*?)\\[/b\\]" +                              // 1
+        "|\\[i\\]([\\s\\S]*?)\\[/i\\]" +                        // 2
+        "|\\[u\\]([\\s\\S]*?)\\[/u\\]" +                        // 3
+        "|\\[s\\]([\\s\\S]*?)\\[/s\\]" +                        // 4
+        "|\\[mask\\]([\\s\\S]*?)\\[/mask\\]" +                  // 5
+        "|\\[url=([^\\]]+?)\\]([\\s\\S]*?)\\[/url\\]" +         // 6 href, 7 label
+        "|\\[user=([^\\]]+?)\\]([\\s\\S]*?)\\[/user\\]" +       // 8 uid, 9 name
+        "|(\\[(?:emoji|sticker)\\][\\s\\S]+?\\[/(?:emoji|sticker)\\]" +
+        "|\\((?:musume_|blake_)\\d+\\)|\\(bgm\\d+\\)|\\(bmo(?:C|_)[a-zA-Z0-9_-]+\\))" + // 10 token
+        "|(https?://[^\\s<>\"'\\[\\]]+)",                        // 11 bare url
+    RegexOption.IGNORE_CASE,
+)
+
+private class InlineResult(val annotated: AnnotatedString, val inline: Map<String, InlineTextContent>)
+
+private fun spanFor(styles: Set<St>, linkColor: Color, maskBg: Color): SpanStyle? {
+    if (styles.isEmpty()) return null
+    val deco = buildList {
+        if (St.UNDERLINE in styles) add(TextDecoration.Underline)
+        if (St.STRIKE in styles) add(TextDecoration.LineThrough)
+    }
+    return SpanStyle(
+        fontWeight = if (St.BOLD in styles) FontWeight.Bold else null,
+        fontStyle = if (St.ITALIC in styles) FontStyle.Italic else null,
+        textDecoration = if (deco.isEmpty()) null else TextDecoration.combine(deco),
+        color = if (St.LINK in styles) linkColor else Color.Unspecified,
+        background = if (St.MASK in styles) maskBg else Color.Unspecified,
+    )
+}
+
+private fun smileyInline(src: String, large: Boolean): InlineTextContent {
+    val size = if (large) 2.6.em else 1.5.em
+    return InlineTextContent(Placeholder(size, size, PlaceholderVerticalAlign.TextCenter)) {
+        AsyncImage(model = src, contentDescription = null, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineResult {
+    val inline = LinkedHashMap<String, InlineTextContent>()
+    val counter = intArrayOf(0)
+
+    fun appendStyled(b: AnnotatedString.Builder, chunk: String, styles: Set<St>) {
+        if (chunk.isEmpty()) return
+        val span = spanFor(styles, linkColor, maskBg)
+        if (span == null) b.append(chunk) else b.withStyle(span) { append(chunk) }
+    }
+
+    fun walk(b: AnnotatedString.Builder, src: String, styles: Set<St>) {
+        var i = 0
+        for (m in INLINE_REGEX.findAll(src)) {
+            if (m.range.first > i) appendStyled(b, src.substring(i, m.range.first), styles)
+            val g = m.groups
+            when {
+                g[1] != null -> walk(b, g[1]!!.value, styles + St.BOLD)
+                g[2] != null -> walk(b, g[2]!!.value, styles + St.ITALIC)
+                g[3] != null -> walk(b, g[3]!!.value, styles + St.UNDERLINE)
+                g[4] != null -> walk(b, g[4]!!.value, styles + St.STRIKE)
+                g[5] != null -> walk(b, g[5]!!.value, styles + St.MASK)
+                g[7] != null -> b.withLink(LinkAnnotation.Url(g[6]!!.value)) {
+                    walk(this, g[7]!!.value, styles + St.LINK)
+                }
+                g[9] != null -> b.withLink(LinkAnnotation.Url("https://bgm.tv/user/${g[8]!!.value}")) {
+                    appendStyled(this, "@" + g[9]!!.value, styles + St.LINK)
+                }
+                g[10] != null -> {
+                    val raw = g[10]!!.value
+                    val smileySrc = Smilies.urlFor(raw)
+                    if (smileySrc != null) {
+                        val key = "sm${counter[0]++}"
+                        val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
+                        inline[key] = smileyInline(smileySrc, large)
+                        b.appendInlineContent(key, raw)
+                    } else {
+                        appendStyled(b, raw, styles) // bmo / custom emoji fallback
+                    }
+                }
+                g[11] != null -> b.withLink(LinkAnnotation.Url(g[11]!!.value)) {
+                    appendStyled(this, g[11]!!.value, styles + St.LINK)
+                }
+            }
+            i = m.range.last + 1
+        }
+        if (i < src.length) appendStyled(b, src.substring(i), styles)
+    }
+
+    val anno = buildAnnotatedString { walk(this, text, emptySet()) }
+    return InlineResult(anno, inline)
+}
+
+// ---------------------------------------------------------------------------
+// Composables
+// ---------------------------------------------------------------------------
+
+@Composable
+fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
+    val blocks = remember(message) { parseBlocks(message) }
+    Column(modifier) {
+        blocks.forEach { block ->
+            when (block) {
+                is TextBlock -> InlineText(block.text)
+                is ImageBlock -> ImageStack(block.urls)
+                is QuoteBlock -> QuoteView(block.inner)
+                is CodeBlock -> CodeView(block.content)
+                is LinkBlock -> LinkLine(block.label, block.url)
+            }
+        }
+    }
+}
+
+@Composable
+private fun InlineText(text: String) {
+    val cs = MaterialTheme.colorScheme
+    val result = remember(text, cs.primary, cs.surfaceVariant) {
+        buildInline(text, linkColor = cs.primary, maskBg = cs.surfaceVariant)
+    }
+    Text(
+        text = result.annotated,
+        inlineContent = result.inline,
+        style = MaterialTheme.typography.bodyMedium,
+    )
+}
+
+@Composable
+private fun ImageStack(urls: List<String>) {
+    Column(Modifier.padding(vertical = 4.dp)) {
+        urls.forEach { url ->
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .padding(bottom = 4.dp)
+                    .sizeIn(maxWidth = 240.dp, maxHeight = 280.dp)
+                    .clip(RoundedCornerShape(10.dp)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun QuoteView(inner: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .padding(vertical = 4.dp)
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .clip(RoundedCornerShape(6.dp))
+            .background(cs.surfaceVariant),
+    ) {
+        Row(Modifier.width(3.dp).fillMaxHeight().background(cs.primary)) {}
+        Column(Modifier.padding(8.dp)) {
+            InlineText(simplifyQuoteInner(inner))
+        }
+    }
+}
+
+@Composable
+private fun CodeView(content: String) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .padding(vertical = 4.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(cs.surfaceVariant)
+            .horizontalScroll(rememberScrollState()),
+    ) {
+        Text(
+            text = content,
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(8.dp),
+        )
+    }
+}
+
+@Composable
+private fun LinkLine(label: String, url: String) {
+    val cs = MaterialTheme.colorScheme
+    val anno = remember(label, url, cs.primary) {
+        buildAnnotatedString {
+            withLink(LinkAnnotation.Url(url)) {
+                withStyle(SpanStyle(color = cs.primary)) { append(label) }
+            }
+        }
+    }
+    Text(anno, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 2.dp))
+}
