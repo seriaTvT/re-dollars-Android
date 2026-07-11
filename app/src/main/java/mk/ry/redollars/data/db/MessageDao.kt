@@ -21,6 +21,9 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE id < :id")
     suspend fun countOlderThan(id: Long): Int
 
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getById(id: Long): MessageEntity?
+
     @Query("UPDATE messages SET isDeleted = 1 WHERE id = :id")
     suspend fun markDeleted(id: Long)
 }

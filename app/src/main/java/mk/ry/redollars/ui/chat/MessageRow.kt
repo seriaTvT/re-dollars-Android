@@ -52,6 +52,7 @@ fun MessageRow(
     isOwn: Boolean,
     firstInGroup: Boolean,
     lastInGroup: Boolean,
+    ownUid: Long? = null,
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -116,6 +117,8 @@ fun MessageRow(
                     }
                 }
             }
+
+            ReactionChips(m.reactions, ownUid)
 
             if (lastInGroup) {
                 Text(
