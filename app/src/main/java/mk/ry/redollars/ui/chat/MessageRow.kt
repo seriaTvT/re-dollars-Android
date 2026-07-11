@@ -1,6 +1,10 @@
 package mk.ry.redollars.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,11 +15,15 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +38,7 @@ import coil3.compose.AsyncImage
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.ui.render.BBCodeMessage
 import mk.ry.redollars.ui.render.ReplyHeader
+import mk.ry.redollars.ui.render.Smilies
 import mk.ry.redollars.ui.render.avatarUrl
 import java.time.Instant
 import java.time.ZoneId
@@ -46,6 +55,10 @@ private val AVATAR = 34.dp
  * the avatar + name show only at the top and the timestamp only at the bottom, and the
  * bubble corners on the author's side are squared off to read as one group.
  */
+/** Quick-reaction choices for the long-press menu (userscript CONTEXT_MENU_REACTIONS). */
+private val QUICK_REACTIONS = listOf(67, 63, 38, 124, 46, 106).map { "(bgm$it)" }
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageRow(
     m: MessageDto,
@@ -53,6 +66,7 @@ fun MessageRow(
     firstInGroup: Boolean,
     lastInGroup: Boolean,
     ownUid: Long? = null,
+    onReact: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -97,28 +111,56 @@ fun MessageRow(
                 )
             }
 
-            Surface(
-                color = if (isOwn) cs.primaryContainer else cs.surfaceVariant,
-                contentColor = if (isOwn) cs.onPrimaryContainer else cs.onSurfaceVariant,
-                shape = bubbleShape(isOwn, firstInGroup, lastInGroup),
-            ) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    if (m.isDeleted) {
-                        Text(
-                            text = "(deleted)",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontStyle = FontStyle.Italic,
-                        )
-                    } else {
-                        m.replyDetails?.let {
-                            ReplyHeader(it, Modifier.fillMaxWidth().padding(bottom = 4.dp))
+            var showQuickReact by remember { mutableStateOf(false) }
+            Box {
+                Surface(
+                    color = if (isOwn) cs.primaryContainer else cs.surfaceVariant,
+                    contentColor = if (isOwn) cs.onPrimaryContainer else cs.onSurfaceVariant,
+                    shape = bubbleShape(isOwn, firstInGroup, lastInGroup),
+                    modifier = Modifier.combinedClickable(
+                        onClick = {},
+                        onLongClick = { if (!m.isDeleted) showQuickReact = true },
+                    ),
+                ) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        if (m.isDeleted) {
+                            Text(
+                                text = "(deleted)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontStyle = FontStyle.Italic,
+                            )
+                        } else {
+                            m.replyDetails?.let {
+                                ReplyHeader(it, Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                            }
+                            BBCodeMessage(m.message)
                         }
-                        BBCodeMessage(m.message)
+                    }
+                }
+
+                DropdownMenu(
+                    expanded = showQuickReact,
+                    onDismissRequest = { showQuickReact = false },
+                ) {
+                    Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
+                        QUICK_REACTIONS.forEach { code ->
+                            AsyncImage(
+                                model = Smilies.urlFor(code),
+                                contentDescription = code,
+                                modifier = Modifier
+                                    .padding(horizontal = 4.dp)
+                                    .size(28.dp)
+                                    .clickable {
+                                        showQuickReact = false
+                                        onReact(code)
+                                    },
+                            )
+                        }
                     }
                 }
             }
 
-            ReactionChips(m.reactions, ownUid)
+            ReactionChips(m.reactions, ownUid, onToggle = onReact)
 
             if (lastInGroup) {
                 Text(

@@ -100,6 +100,7 @@ fun ChatScreen(
                 ownUid = vm.session?.uid,
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
+                onReact = vm::toggleReaction,
                 modifier = Modifier.weight(1f),
             )
             TypingIndicator(typingUsers)
@@ -167,6 +168,7 @@ private fun MessageList(
     ownUid: Long?,
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
+    onReact: (Long, String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -237,6 +239,7 @@ private fun MessageList(
                     firstInGroup = !groupable(prev, m),
                     lastInGroup = !groupable(m, next),
                     ownUid = ownUid,
+                    onReact = { emoji -> onReact(m.id, emoji) },
                 )
             }
         }
