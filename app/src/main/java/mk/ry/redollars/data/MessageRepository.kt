@@ -25,6 +25,7 @@ import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.UserProfileDto
+import mk.ry.redollars.net.UserSearchDto
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
@@ -90,6 +91,10 @@ class MessageRepository @Inject constructor(
     /** Resolve a uid's cached profile (true nickname + avatar) from the backend. */
     suspend fun fetchUserProfile(uid: Long): UserProfileDto? =
         runCatching { rest.getUser(uid) }.getOrNull()
+
+    /** Mention autocomplete: users whose nickname/username matches [query]. */
+    suspend fun searchUsers(query: String): List<UserSearchDto> =
+        runCatching { rest.searchUsers(query) }.getOrDefault(emptyList())
 
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return

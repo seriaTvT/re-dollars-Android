@@ -5,6 +5,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -24,6 +26,7 @@ import mk.ry.redollars.data.MessageRepository
 import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
+import mk.ry.redollars.net.UserSearchDto
 import mk.ry.redollars.net.WsUser
 import javax.inject.Inject
 
@@ -52,8 +55,13 @@ class ChatViewModel @Inject constructor(
     var pendingJumpId by mutableStateOf<Long?>(null)
     /** Message being replied to; the send path prefixes `[quote=id][/quote]`. */
     var replyTo by mutableStateOf<MessageDto?>(null); private set
-    /** Composer text, hoisted so edit mode can prefill it. */
-    var composerText by mutableStateOf("")
+    /** Composer contents + cursor, hoisted so edit prefill, smiley insertion and
+     *  mention completion can all manipulate it. */
+    var composerValue by mutableStateOf(TextFieldValue(""))
+        private set
+    /** Suggestions for the trailing `@query` at the cursor (mention autocomplete). */
+    var mentionCandidates by mutableStateOf<List<UserSearchDto>>(emptyList())
+        private set
     /** Message being edited (id + any hidden leading quote to restore on save). */
     var editing by mutableStateOf<EditingState?>(null); private set
     /** True once the backend Bearer token is validated for this session's uid. */
@@ -127,10 +135,12 @@ class ChatViewModel @Inject constructor(
     private var typingStopJob: Job? = null
     private var typingActive = false
 
-    fun onComposerChanged(text: String) {
-        composerText = text
-        if (session == null) return
-        if (text.isBlank()) {
+    fun onComposerChanged(value: TextFieldValue) {
+        val textChanged = value.text != composerValue.text
+        composerValue = value
+        updateMentionSuggestions(value)
+        if (session == null || !textChanged) return // cursor moves aren't typing
+        if (value.text.isBlank()) {
             stopTyping()
             return
         }
@@ -152,6 +162,85 @@ class ChatViewModel @Inject constructor(
             typingActive = false
             repo.sendTyping(false)
         }
+    }
+
+    /** Programmatic composer reset (send/edit flows); cursor to end, suggestions gone. */
+    private fun setComposer(text: String) {
+        composerValue = TextFieldValue(text, TextRange(text.length))
+        mentionJob?.cancel()
+        mentionCandidates = emptyList()
+        mentionStart = -1
+    }
+
+    /** Replace the current selection with a smiley code, cursor after it. */
+    fun insertSmiley(code: String) {
+        val v = composerValue
+        val text = v.text.replaceRange(v.selection.min, v.selection.max, code)
+        composerValue = TextFieldValue(text, TextRange(v.selection.min + code.length))
+    }
+
+    // ---- Mention autocomplete (MentionCompleter.tsx parity) ----
+
+    private var mentionJob: Job? = null
+    private var mentionStart = -1 // index of the '@' the suggestions would replace
+    /** username -> user for every candidate ever shown; lets the send path resolve
+     *  plain `@username` tokens to `[user=id]` BBCode without a network round-trip. */
+    private val mentionCache = HashMap<String, UserSearchDto>()
+    private val mentionQuery = Regex("""(^|\s)@(\S{1,30})$""")
+
+    private fun updateMentionSuggestions(value: TextFieldValue) {
+        mentionJob?.cancel()
+        val cursor = if (value.selection.collapsed) value.selection.end else -1
+        val match = if (cursor >= 0) mentionQuery.find(value.text.take(cursor)) else null
+        if (match == null) {
+            mentionStart = -1
+            mentionCandidates = emptyList()
+            return
+        }
+        val query = match.groupValues[2]
+        mentionStart = cursor - query.length - 1
+        mentionJob = viewModelScope.launch {
+            delay(250) // debounce, MENTION_DEBOUNCE parity
+            val users = repo.searchUsers(query)
+            for (u in users) if (u.username.isNotBlank()) mentionCache[u.username] = u
+            mentionCandidates = users
+        }
+    }
+
+    /** A suggestion was tapped: swap the `@query` for `@username ` (web parity — the
+     *  readable BBCode form is produced at send time by [transformMentions]). */
+    fun pickMention(user: UserSearchDto) {
+        val start = mentionStart
+        val cursor = composerValue.selection.end
+        if (start < 0 || start >= cursor || user.username.isBlank()) return
+        val replacement = "@${user.username} "
+        val text = composerValue.text.replaceRange(start, cursor, replacement)
+        mentionCache[user.username] = user
+        composerValue = TextFieldValue(text, TextRange(start + replacement.length))
+        mentionJob?.cancel()
+        mentionCandidates = emptyList()
+        mentionStart = -1
+    }
+
+    private val mentionToken = Regex("""(^|\s|\[/[^\]]+\])@([\p{L}\p{N}_']{1,30})""")
+    private val codeBlockToken = Regex("""\[code\][\s\S]*?\[/code\]""", RegexOption.IGNORE_CASE)
+
+    /** `@username` -> `[user=id]nickname[/user]` for users seen in the completer;
+     *  [code] blocks are left untouched (mentions.ts parity, minus its network lookup). */
+    private fun transformMentions(text: String): String {
+        if ('@' !in text || mentionCache.isEmpty()) return text
+        val blocks = mutableListOf<String>()
+        val masked = codeBlockToken.replace(text) { m ->
+            blocks.add(m.value)
+            "\u0000CB${blocks.size - 1}\u0000"
+        }
+        var out = mentionToken.replace(masked) { m ->
+            val user = mentionCache[m.groupValues[2]]
+            if (user != null) "${m.groupValues[1]}[user=${user.id}]${user.nickname}[/user]"
+            else m.value
+        }
+        blocks.forEachIndexed { i, b -> out = out.replace("\u0000CB$i\u0000", b) }
+        return out
     }
 
     /** Open a notification: mark it read and ask the list to jump to its message. */
@@ -209,24 +298,24 @@ class ChatViewModel @Inject constructor(
         replyTo = null
         val hidden = leadingQuote.find(m.message)?.value
         editing = EditingState(m.id, hidden)
-        composerText = if (hidden != null) m.message.removePrefix(hidden) else m.message
+        setComposer(if (hidden != null) m.message.removePrefix(hidden) else m.message)
     }
 
     fun cancelEdit() {
         editing = null
-        composerText = ""
+        setComposer("")
     }
 
     fun submitEdit(text: String) {
         val edit = editing ?: return
         viewModelScope.launch {
             sendStatus = "Saving edit…"
-            val body = (edit.hiddenQuote ?: "") + text
+            val body = (edit.hiddenQuote ?: "") + transformMentions(text)
             val ok = repo.editMessage(edit.id, body)
             sendStatus = if (ok) "Edited (id=${edit.id})" else "Edit failed"
             if (ok) {
                 editing = null
-                composerText = ""
+                setComposer("")
             }
         }
     }
@@ -243,9 +332,10 @@ class ChatViewModel @Inject constructor(
      */
     fun beginSend(text: String): String {
         stopTyping()
-        val body = replyTo?.let { "[quote=${it.id}][/quote]$text" } ?: text
+        val content = transformMentions(text)
+        val body = replyTo?.let { "[quote=${it.id}][/quote]$content" } ?: content
         replyTo = null
-        composerText = ""
+        setComposer("")
         pendingText = body
         sendStatus = "Posting via WebView…"
         return body
