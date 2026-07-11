@@ -2,6 +2,7 @@ package mk.ry.redollars.spike.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -16,21 +17,27 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,8 +46,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import mk.ry.redollars.spike.SpikeViewModel
 import mk.ry.redollars.spike.net.MessageDto
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -139,23 +152,106 @@ private fun StatusLine(connected: Boolean, onlineCount: Int) {
 @Composable
 private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    val scope = rememberCoroutineScope()
+
+    // "At bottom" = the last item is the last visible one (or the list is empty).
+    val atBottom by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            last == null || last.index >= info.totalItemsCount - 1
+        }
     }
-    LazyColumn(
-        state = listState,
-        modifier = modifier.fillMaxWidth(),
-        contentPadding = PaddingValues(vertical = 6.dp),
-    ) {
-        itemsIndexed(messages, key = { _, m -> m.id }) { i, m ->
-            val prev = messages.getOrNull(i - 1)
-            val next = messages.getOrNull(i + 1)
-            MessageRow(
-                m = m,
-                isOwn = ownUid != null && m.uid == ownUid,
-                firstInGroup = !groupable(prev, m),
-                lastInGroup = !groupable(m, next),
+
+    var newCount by remember { mutableStateOf(0) }
+    var prevSize by remember { mutableStateOf(0) }
+    var initialized by remember { mutableStateOf(false) }
+
+    LaunchedEffect(messages.size) {
+        val size = messages.size
+        when {
+            size == 0 -> Unit
+            !initialized -> {
+                listState.scrollToItem(size - 1) // land at the bottom on first load
+                initialized = true
+            }
+            size > prevSize -> {
+                if (atBottom) listState.animateScrollToItem(size - 1)
+                else newCount += size - prevSize // arrived while scrolled up
+            }
+        }
+        prevSize = size
+    }
+
+    // Reaching the bottom (manually or via the pill) clears the unread badge.
+    LaunchedEffect(atBottom) { if (atBottom) newCount = 0 }
+
+    Box(modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 6.dp),
+        ) {
+            itemsIndexed(messages, key = { _, m -> m.id }) { i, m ->
+                val prev = messages.getOrNull(i - 1)
+                val next = messages.getOrNull(i + 1)
+                if (prev == null || !sameDay(prev.timestamp, m.timestamp)) {
+                    DayDivider(m.timestamp)
+                }
+                MessageRow(
+                    m = m,
+                    isOwn = ownUid != null && m.uid == ownUid,
+                    firstInGroup = !groupable(prev, m),
+                    lastInGroup = !groupable(m, next),
+                )
+            }
+        }
+
+        AnimatedVisibility(
+            visible = newCount > 0,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+        ) {
+            NewMessagesPill(newCount) {
+                scope.launch { listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0)) }
+                newCount = 0
+            }
+        }
+    }
+}
+
+@Composable
+private fun DayDivider(timestampSec: Long) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            shape = RoundedCornerShape(50),
+        ) {
+            Text(
+                text = dayLabel(timestampSec),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
             )
+        }
+    }
+}
+
+@Composable
+private fun NewMessagesPill(count: Int, onClick: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        shape = RoundedCornerShape(50),
+        shadowElevation = 4.dp,
+        modifier = Modifier.clickable(onClick = onClick),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(6.dp))
+            Text("$count new", style = MaterialTheme.typography.labelLarge)
         }
     }
 }
@@ -164,4 +260,26 @@ private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Mod
 private fun groupable(a: MessageDto?, b: MessageDto?): Boolean {
     if (a == null || b == null) return false
     return a.uid == b.uid && (b.timestamp - a.timestamp) in 0..300
+}
+
+private fun sameDay(a: Long, b: Long): Boolean {
+    val zone = ZoneId.systemDefault()
+    return Instant.ofEpochSecond(a).atZone(zone).toLocalDate() ==
+        Instant.ofEpochSecond(b).atZone(zone).toLocalDate()
+}
+
+private val WEEKDAYS = listOf("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+private val DAY_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+
+/** Mirrors format.ts formatDate(_, 'label'): 今天 / 昨天 / 周X / yyyy-MM-dd. */
+private fun dayLabel(timestampSec: Long): String {
+    val zone = ZoneId.systemDefault()
+    val date = Instant.ofEpochSecond(timestampSec).atZone(zone).toLocalDate()
+    val diff = ChronoUnit.DAYS.between(date, LocalDate.now(zone))
+    return when {
+        diff == 0L -> "今天"
+        diff == 1L -> "昨天"
+        diff in 2..6 -> WEEKDAYS[date.dayOfWeek.value - 1]
+        else -> date.format(DAY_FMT)
+    }
 }
