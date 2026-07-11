@@ -50,10 +50,16 @@ class MessageRepository(context: Context, private val scope: CoroutineScope) {
     private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 64)
     val logs: SharedFlow<String> = _logs.asSharedFlow()
 
-    /** (Re)identify the WebSocket as [uid] and catch up on anything missed. */
+    /** (Re)identify the WebSocket as [uid]. Catch-up runs on the Status(true) transition. */
     fun connect(uid: Long) {
         ws.connect(uid)
-        scope.launch { syncNewer() }
+    }
+
+    /** Foreground/background from the UI lifecycle: pause the socket heartbeat and, on
+     *  return, resume/reconnect and catch up on anything missed while away. */
+    fun setForeground(active: Boolean) {
+        ws.setActive(active)
+        if (active) scope.launch { syncNewer() }
     }
 
     /** Fetch everything newer than the highest cached id (or a recent window when empty). */
@@ -77,7 +83,11 @@ class MessageRepository(context: Context, private val scope: CoroutineScope) {
 
     private fun onWsEvent(event: WsEvent) {
         when (event) {
-            is WsEvent.Status -> _connected.value = event.connected
+            is WsEvent.Status -> {
+                _connected.value = event.connected
+                // Every (re)connect catches up via since_db_id; WS delivery is best-effort.
+                if (event.connected) scope.launch { syncNewer() }
+            }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
             is WsEvent.NewMessages -> scope.launch { dao.upsertAll(event.messages.map { it.toEntity() }) }
             is WsEvent.Log -> log(event.line)

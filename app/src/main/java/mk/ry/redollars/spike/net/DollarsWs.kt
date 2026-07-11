@@ -6,7 +6,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
@@ -16,8 +15,9 @@ import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
+import kotlin.random.Random
 
-/** Events surfaced to the UI layer. */
+/** Events surfaced to the repository. */
 sealed interface WsEvent {
     data class Status(val connected: Boolean) : WsEvent
     data class OnlineCount(val count: Int) : WsEvent
@@ -26,34 +26,72 @@ sealed interface WsEvent {
 }
 
 /**
- * OkHttp WebSocket client mirroring re-dollars-preact/src/hooks/useWebSocket.ts:
- * on open -> identify; heartbeat ping every 25s; ack any frame carrying ackId.
- * Reconnect/gap-recovery are intentionally out of scope for the spike.
+ * OkHttp WebSocket client mirroring re-dollars-preact/src/hooks/useWebSocket.ts, plus:
+ *  - exponential-backoff reconnect on unexpected close/failure,
+ *  - heartbeat paused while backgrounded ([setActive]),
+ *  - stale-socket guard so a replaced socket's callbacks are ignored.
+ * Gap recovery lives in the repository, driven by the Status(true) transition.
  */
 class DollarsWs(
     private val client: OkHttpClient,
     private val scope: CoroutineScope,
     private val onEvent: (WsEvent) -> Unit,
 ) {
-    private var ws: WebSocket? = null
+    private var currentSocket: WebSocket? = null
     private var heartbeat: Job? = null
+    private var reconnectJob: Job? = null
     private var uid: Long = 0
+    private var active = true
+    private var intentionallyClosed = false
+    private var attempt = 0
 
     fun connect(uid: Long) {
         this.uid = uid
-        close()
+        intentionallyClosed = false
+        attempt = 0
+        reconnectJob?.cancel(); reconnectJob = null
+        open()
+    }
+
+    /** Foreground/background toggle: pause heartbeat when hidden, resume/reconnect when shown. */
+    fun setActive(active: Boolean) {
+        if (this.active == active) return
+        this.active = active
+        if (active) {
+            if (currentSocket == null && !intentionallyClosed) open() else startHeartbeat()
+        } else {
+            stopHeartbeat()
+            reconnectJob?.cancel(); reconnectJob = null
+        }
+    }
+
+    fun close() {
+        intentionallyClosed = true
+        reconnectJob?.cancel(); reconnectJob = null
+        stopHeartbeat()
+        currentSocket?.close(1000, "bye")
+        currentSocket = null
+    }
+
+    private fun open() {
         val req = Request.Builder()
             .url(Config.WEBSOCKET_URL)
             .header("User-Agent", Config.USER_AGENT)
             .build()
-        ws = client.newWebSocket(req, listener)
+        // Replacing currentSocket makes any prior socket's callbacks stale (ignored below).
+        currentSocket = client.newWebSocket(req, listener)
     }
 
-    fun close() {
-        heartbeat?.cancel()
-        heartbeat = null
-        ws?.close(1000, "bye")
-        ws = null
+    private fun scheduleReconnect() {
+        if (intentionallyClosed || !active) return
+        reconnectJob?.cancel()
+        attempt++
+        val backoff = (1000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000L) // 2s,4s,…,30s cap
+        reconnectJob = scope.launch {
+            onEvent(WsEvent.Log("WS reconnect in ${backoff}ms (attempt $attempt)"))
+            delay(backoff + Random.nextLong(0, 400))
+            if (!intentionallyClosed && active) open()
+        }
     }
 
     private fun startHeartbeat() {
@@ -61,23 +99,30 @@ class DollarsWs(
         heartbeat = scope.launch {
             while (isActive) {
                 delay(Config.HEARTBEAT_INTERVAL_MS)
-                ws?.send("""{"type":"ping"}""")
+                currentSocket?.send("""{"type":"ping"}""")
             }
         }
     }
 
+    private fun stopHeartbeat() {
+        heartbeat?.cancel()
+        heartbeat = null
+    }
+
     private val listener = object : WebSocketListener() {
         override fun onOpen(webSocket: WebSocket, response: Response) {
+            if (webSocket !== currentSocket) return
+            attempt = 0
             onEvent(WsEvent.Status(true))
             onEvent(WsEvent.Log("WS open -> identify uid=$uid"))
             webSocket.send("""{"type":"identify","uid":"$uid"}""")
-            startHeartbeat()
+            if (active) startHeartbeat()
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            if (webSocket !== currentSocket) return
             val obj = runCatching { AppJson.parseToJsonElement(text).jsonObject }.getOrNull() ?: return
 
-            // Ack any reliable frame first.
             obj["ackId"]?.jsonPrimitive?.contentOrNull?.let { ackId ->
                 webSocket.send("""{"type":"ack","ackId":"$ackId"}""")
             }
@@ -100,15 +145,21 @@ class DollarsWs(
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            heartbeat?.cancel()
+            if (webSocket !== currentSocket) return
+            stopHeartbeat()
+            currentSocket = null
             onEvent(WsEvent.Status(false))
             onEvent(WsEvent.Log("WS closed: $code $reason"))
+            scheduleReconnect()
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            heartbeat?.cancel()
+            if (webSocket !== currentSocket) return
+            stopHeartbeat()
+            currentSocket = null
             onEvent(WsEvent.Status(false))
             onEvent(WsEvent.Log("WS failure: ${t.message}"))
+            scheduleReconnect()
         }
     }
 }
