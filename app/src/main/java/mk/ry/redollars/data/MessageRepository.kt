@@ -16,10 +16,12 @@ import mk.ry.redollars.data.db.MessageDao
 import mk.ry.redollars.data.db.toDto
 import mk.ry.redollars.data.db.toEntity
 import mk.ry.redollars.di.ApplicationScope
+import kotlinx.coroutines.Job
 import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.WsEvent
+import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -58,10 +60,22 @@ class MessageRepository @Inject constructor(
     private val _logs = MutableSharedFlow<String>(extraBufferCapacity = 64)
     val logs: SharedFlow<String> = _logs.asSharedFlow()
 
-    /** (Re)identify the WebSocket as [uid]. Catch-up runs on the Status(true) transition. */
-    fun connect(uid: Long) {
-        ws.connect(uid)
+    /** Users currently typing (never includes ourselves), newest activity last. */
+    private val _typingUsers = MutableStateFlow<List<WsUser>>(emptyList())
+    val typingUsers: StateFlow<List<WsUser>> = _typingUsers.asStateFlow()
+
+    private val typingClearJobs = HashMap<Long, Job>()
+    private var ownUid = 0L
+
+    /** (Re)identify the WebSocket as [uid]. Catch-up runs on the Status(true) transition.
+     *  Passing [name] enables presence sharing so our typing is attributed to us. */
+    fun connect(uid: Long, name: String? = null, avatar: String? = null) {
+        ownUid = uid
+        ws.connect(uid, name, avatar)
     }
+
+    /** Broadcast our composer typing state. */
+    fun sendTyping(typing: Boolean) = ws.sendTyping(typing)
 
     /** Foreground/background from the UI lifecycle: pause the socket heartbeat and, on
      *  return, resume/reconnect and catch up on anything missed while away. */
@@ -117,9 +131,35 @@ class MessageRepository @Inject constructor(
                 if (event.connected) scope.launch { syncNewer() }
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
-            is WsEvent.NewMessages -> scope.launch { dao.upsertAll(event.messages.map { it.toEntity() }) }
+            is WsEvent.NewMessages -> {
+                scope.launch { dao.upsertAll(event.messages.map { it.toEntity() }) }
+                // A delivered message implies its author stopped typing.
+                for (m in event.messages) clearTyping(m.uid)
+            }
+            is WsEvent.Typing -> onTyping(event)
             is WsEvent.Log -> log(event.line)
         }
+    }
+
+    private fun onTyping(event: WsEvent.Typing) {
+        val uid = event.user.id
+        if (uid == ownUid) return
+        if (event.typing) {
+            _typingUsers.value = _typingUsers.value.filterNot { it.id == uid } + event.user
+            typingClearJobs.remove(uid)?.cancel()
+            // Mirrors the userscript's TYPING_AUTO_CLEAR: drop stale indicators after 10s.
+            typingClearJobs[uid] = scope.launch {
+                kotlinx.coroutines.delay(10_000)
+                clearTyping(uid)
+            }
+        } else {
+            clearTyping(uid)
+        }
+    }
+
+    private fun clearTyping(uid: Long) {
+        typingClearJobs.remove(uid)?.cancel()
+        _typingUsers.value = _typingUsers.value.filterNot { it.id == uid }
     }
 
     private fun log(line: String) {

@@ -6,10 +6,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -17,11 +20,15 @@ import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import kotlin.random.Random
 
+/** A user attached to a presence/typing frame. */
+data class WsUser(val id: Long, val name: String, val avatar: String?)
+
 /** Events surfaced to the repository. */
 sealed interface WsEvent {
     data class Status(val connected: Boolean) : WsEvent
     data class OnlineCount(val count: Int) : WsEvent
     data class NewMessages(val messages: List<MessageDto>) : WsEvent
+    data class Typing(val user: WsUser, val typing: Boolean) : WsEvent
     data class Log(val line: String) : WsEvent
 }
 
@@ -41,22 +48,34 @@ class DollarsWs(
     private var heartbeat: Job? = null
     private var reconnectJob: Job? = null
     private var uid: Long = 0
+    private var joinName: String? = null
+    private var joinAvatar: String? = null
     private var active = true
     private var intentionallyClosed = false
     private var attempt = 0
 
-    fun connect(uid: Long) {
+    /** [name]/[avatar] enable presence sharing (`join`): the server then attributes our
+     *  typing/presence frames. Without them we stay an identified-but-anonymous reader. */
+    fun connect(uid: Long, name: String? = null, avatar: String? = null) {
         this.uid = uid
+        this.joinName = name
+        this.joinAvatar = avatar
         intentionallyClosed = false
         attempt = 0
         reconnectJob?.cancel(); reconnectJob = null
         open()
     }
 
+    /** Broadcast our typing state (server attaches the joined user identity). */
+    fun sendTyping(typing: Boolean) {
+        currentSocket?.send("""{"type":"${if (typing) "typing_start" else "typing_stop"}"}""")
+    }
+
     /** Foreground/background toggle: pause heartbeat when hidden, resume/reconnect when shown. */
     fun setActive(active: Boolean) {
         if (this.active == active) return
         this.active = active
+        currentSocket?.send("""{"type":"presence","open":$active}""")
         if (active) {
             if (currentSocket == null && !intentionallyClosed) open() else startHeartbeat()
         } else {
@@ -114,8 +133,17 @@ class DollarsWs(
             if (webSocket !== currentSocket) return
             attempt = 0
             onEvent(WsEvent.Status(true))
-            onEvent(WsEvent.Log("WS open -> identify uid=$uid"))
+            onEvent(WsEvent.Log("WS open -> identify uid=$uid join=${joinName != null}"))
             webSocket.send("""{"type":"identify","uid":"$uid"}""")
+            joinName?.let { name ->
+                val user = buildJsonObject {
+                    put("id", uid.toString())
+                    put("name", name)
+                    joinAvatar?.let { put("avatar", it) }
+                }
+                webSocket.send("""{"type":"join","user":$user}""")
+            }
+            webSocket.send("""{"type":"presence","open":$active}""")
             if (active) startHeartbeat()
         }
 
@@ -139,8 +167,22 @@ class DollarsWs(
                     if (msgs.isNotEmpty()) onEvent(WsEvent.NewMessages(msgs))
                 }
 
+                "typing_start", "typing_stop" -> {
+                    val userObj = obj["user"] as? JsonObject ?: return
+                    val id = userObj["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
+                    val name = userObj["nickname"]?.jsonPrimitive?.contentOrNull
+                        ?: userObj["name"]?.jsonPrimitive?.contentOrNull ?: id.toString()
+                    val avatar = userObj["avatar"]?.jsonPrimitive?.contentOrNull
+                    onEvent(
+                        WsEvent.Typing(
+                            WsUser(id, name, avatar),
+                            typing = obj["type"]?.jsonPrimitive?.contentOrNull == "typing_start",
+                        ),
+                    )
+                }
+
                 "pong" -> { /* heartbeat ack */ }
-                else -> { /* typing/presence/etc. not yet handled */ }
+                else -> { /* presence_update/reactions/etc. not yet handled */ }
             }
         }
 
