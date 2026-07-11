@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.render
+package mk.ry.redollars.ui.render
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -43,7 +43,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import coil3.compose.AsyncImage
-import mk.ry.redollars.spike.net.ReplyDetails
+import mk.ry.redollars.net.ReplyDetails
 
 // ---------------------------------------------------------------------------
 // Block-level parsing

@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.data
+package mk.ry.redollars.data
 
 import android.content.Context
 import kotlinx.coroutines.CoroutineScope
@@ -11,13 +11,13 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import mk.ry.redollars.spike.data.db.AppDatabase
-import mk.ry.redollars.spike.data.db.toDto
-import mk.ry.redollars.spike.data.db.toEntity
-import mk.ry.redollars.spike.net.DollarsWs
-import mk.ry.redollars.spike.net.MessageDto
-import mk.ry.redollars.spike.net.RestApi
-import mk.ry.redollars.spike.net.WsEvent
+import mk.ry.redollars.data.db.AppDatabase
+import mk.ry.redollars.data.db.toDto
+import mk.ry.redollars.data.db.toEntity
+import mk.ry.redollars.net.DollarsWs
+import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.RestApi
+import mk.ry.redollars.net.WsEvent
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 

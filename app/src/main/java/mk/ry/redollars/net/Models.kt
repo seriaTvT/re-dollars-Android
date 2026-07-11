@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.net
+package mk.ry.redollars.net
 
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
@@ -37,7 +37,7 @@ val AppJson: Json = Json {
 }
 
 /**
- * A single chat message (subset of the backend EnrichedMessage relevant to the spike).
+ * A single chat message (subset of the backend EnrichedMessage currently used by the app).
  * Unknown fields (image_meta, link_previews, reply_details, reactions...) are ignored.
  */
 @Serializable

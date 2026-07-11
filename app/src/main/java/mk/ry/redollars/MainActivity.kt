@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike
+package mk.ry.redollars
 
 import android.os.Bundle
 import android.webkit.WebView
@@ -26,24 +26,24 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
-import mk.ry.redollars.spike.ui.chat.ChatScreen
-import mk.ry.redollars.spike.ui.chat.Lightbox
-import mk.ry.redollars.spike.ui.render.LocalImageViewer
-import mk.ry.redollars.spike.ui.theme.RedollarsTheme
+import mk.ry.redollars.ui.chat.ChatScreen
+import mk.ry.redollars.ui.chat.Lightbox
+import mk.ry.redollars.ui.render.LocalImageViewer
+import mk.ry.redollars.ui.theme.RedollarsTheme
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { SpikeApp() }
+        setContent { RedollarsApp() }
     }
 }
 
 @Composable
-private fun SpikeApp() {
+private fun RedollarsApp() {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            val vm: SpikeViewModel = viewModel()
+            val vm: ChatViewModel = viewModel()
             LaunchedEffect(Unit) { vm.start() }
             LifecycleStartEffect(Unit) {
                 vm.setForeground(true)
@@ -75,7 +75,7 @@ private fun SpikeApp() {
 
                     // Persistent Bangumi WebView: full-screen while logging in, kept alive
                     // (1dp) afterwards so posts run same-origin from the real session.
-                    mk.ry.redollars.spike.ui.BangumiWebView(
+                    mk.ry.redollars.ui.BangumiWebView(
                         visible = vm.showLogin,
                         onCreated = { webView = it },
                         onResult = vm::onLoggedIn,

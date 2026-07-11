@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.render
+package mk.ry.redollars.ui.render
 
 /** Ported from re-dollars-preact/src/utils/format.ts getAvatarUrl(). */
 fun avatarUrl(avatar: String?, size: Char = 'l'): String {

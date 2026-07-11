@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.chat
+package mk.ry.redollars.ui.chat
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row

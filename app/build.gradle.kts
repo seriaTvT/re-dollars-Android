@@ -9,16 +9,16 @@ plugins {
 }
 
 android {
-    namespace = "mk.ry.redollars.spike"
+    namespace = "mk.ry.redollars"
     compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
-        applicationId = "mk.ry.redollars.spike"
+        applicationId = "mk.ry.redollars"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1-spike"
+        versionName = "0.2"
     }
 
     buildTypes {

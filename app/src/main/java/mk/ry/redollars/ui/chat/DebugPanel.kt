@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.chat
+package mk.ry.redollars.ui.chat
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,7 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import mk.ry.redollars.spike.SessionInfo
+import mk.ry.redollars.SessionInfo
 
 /** Developer/diagnostic info, kept available during the migration off the test UI. */
 @Composable

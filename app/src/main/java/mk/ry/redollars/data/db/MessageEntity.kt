@@ -1,10 +1,10 @@
-package mk.ry.redollars.spike.data.db
+package mk.ry.redollars.data.db
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
-import mk.ry.redollars.spike.net.AppJson
-import mk.ry.redollars.spike.net.MessageDto
-import mk.ry.redollars.spike.net.ReplyDetails
+import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.ReplyDetails
 
 @Entity(tableName = "messages")
 data class MessageEntity(

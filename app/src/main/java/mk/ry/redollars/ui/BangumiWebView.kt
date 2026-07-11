@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui
+package mk.ry.redollars.ui
 
 import android.annotation.SuppressLint
 import android.webkit.CookieManager
@@ -15,9 +15,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import mk.ry.redollars.spike.SessionInfo
-import mk.ry.redollars.spike.net.AppJson
-import mk.ry.redollars.spike.net.Config
+import mk.ry.redollars.SessionInfo
+import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.Config
 
 private const val EXTRACT_JS = """
 (function(){

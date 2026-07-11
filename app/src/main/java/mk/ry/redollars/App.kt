@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike
+package mk.ry.redollars
 
 import android.app.Application
 import coil3.ImageLoader
