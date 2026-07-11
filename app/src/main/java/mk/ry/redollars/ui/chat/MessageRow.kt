@@ -17,6 +17,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -25,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -74,8 +76,11 @@ fun MessageRow(
     firstInGroup: Boolean,
     lastInGroup: Boolean,
     ownUid: Long? = null,
+    canModify: Boolean = false,
     onReact: (String) -> Unit = {},
     onReply: () -> Unit = {},
+    onEdit: () -> Unit = {},
+    onDelete: () -> Unit = {},
     onJumpTo: (Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -122,6 +127,27 @@ fun MessageRow(
             }
 
             var showQuickReact by remember { mutableStateOf(false) }
+            var showDeleteConfirm by remember { mutableStateOf(false) }
+
+            if (showDeleteConfirm) {
+                AlertDialog(
+                    onDismissRequest = { showDeleteConfirm = false },
+                    title = { Text("Delete message?") },
+                    text = { Text("This deletes the message for everyone.") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                showDeleteConfirm = false
+                                onDelete()
+                            },
+                        ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showDeleteConfirm = false }) { Text("Cancel") }
+                    },
+                )
+            }
+
             Box {
                 Surface(
                     color = if (isOwn) cs.primaryContainer else cs.surfaceVariant,
@@ -208,6 +234,22 @@ fun MessageRow(
                                 clipboard.setText(AnnotatedString(m.message))
                             },
                         )
+                        if (isOwn && canModify) {
+                            DropdownMenuItem(
+                                text = { Text("Edit") },
+                                onClick = {
+                                    showQuickReact = false
+                                    onEdit()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Delete", color = MaterialTheme.colorScheme.error) },
+                                onClick = {
+                                    showQuickReact = false
+                                    showDeleteConfirm = true
+                                },
+                            )
+                        }
                     } else {
                         ReactionPicker(
                             onPick = { code ->

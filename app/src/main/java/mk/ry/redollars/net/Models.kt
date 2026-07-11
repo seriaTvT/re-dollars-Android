@@ -193,6 +193,20 @@ data class NotificationWsDto(
     )
 }
 
+/** GET /auth/me with a Bearer token. */
+@Serializable
+data class AuthMeResponse(
+    val status: Boolean = false,
+    val user: AuthUserDto? = null,
+)
+
+@Serializable
+data class AuthUserDto(
+    val id: Long = 0,
+    val nickname: String = "",
+    val avatar: String = "",
+)
+
 /** GET /users/:id — backend profile cache. nickname is the display name (username is the slug). */
 @Serializable
 data class UserLookupResponse(

@@ -56,13 +56,16 @@ private fun replyPreview(content: String): String = content
 
 @Composable
 fun ChatComposer(
+    text: String,
+    onTextChange: (String) -> Unit,
     enabled: Boolean,
     status: String?,
     replyTo: MessageDto?,
     onCancelReply: () -> Unit,
+    editing: Boolean,
+    onCancelEdit: () -> Unit,
     onSend: (String) -> Unit,
     onLogin: () -> Unit,
-    onTyping: (String) -> Unit = {},
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding()) {
@@ -74,7 +77,9 @@ fun ChatComposer(
                     modifier = Modifier.padding(start = 16.dp, top = 6.dp),
                 )
             }
-            if (replyTo != null) {
+            if (editing) {
+                EditStrip(onCancelEdit)
+            } else if (replyTo != null) {
                 ReplyStrip(replyTo, onCancelReply)
             }
             if (!enabled) {
@@ -87,19 +92,23 @@ fun ChatComposer(
                     Text("Log in to chat")
                 }
             } else {
-                var text by rememberSaveable { mutableStateOf("") }
                 Row(
                     Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     OutlinedTextField(
                         value = text,
-                        onValueChange = {
-                            text = it
-                            onTyping(it)
-                        },
+                        onValueChange = onTextChange,
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text(if (replyTo != null) "Reply…" else "Message…") },
+                        placeholder = {
+                            Text(
+                                when {
+                                    editing -> "Edit message…"
+                                    replyTo != null -> "Reply…"
+                                    else -> "Message…"
+                                },
+                            )
+                        },
                         maxLines = 5,
                         shape = RoundedCornerShape(24.dp),
                     )
@@ -107,10 +116,7 @@ fun ChatComposer(
                     FilledIconButton(
                         onClick = {
                             val trimmed = text.trim()
-                            if (trimmed.isNotEmpty()) {
-                                onSend(trimmed)
-                                text = ""
-                            }
+                            if (trimmed.isNotEmpty()) onSend(trimmed)
                         },
                         enabled = text.isNotBlank(),
                     ) {
@@ -118,6 +124,37 @@ fun ChatComposer(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun EditStrip(onCancel: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(cs.surfaceContainerHigh)
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.width(3.dp).fillMaxHeight().background(cs.tertiary)) {}
+        Text(
+            text = "Editing message",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = cs.tertiary,
+            modifier = Modifier.weight(1f).padding(horizontal = 10.dp, vertical = 10.dp),
+        )
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cancel edit",
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

@@ -90,13 +90,16 @@ fun ChatScreen(
         },
         bottomBar = {
             ChatComposer(
+                text = vm.composerText,
+                onTextChange = vm::onComposerChanged,
                 enabled = vm.session != null,
                 status = vm.sendStatus,
                 replyTo = vm.replyTo,
                 onCancelReply = vm::cancelReply,
+                editing = vm.editing != null,
+                onCancelEdit = vm::cancelEdit,
                 onSend = onSend,
                 onLogin = onOpenLogin,
-                onTyping = vm::onComposerChanged,
             )
         },
     ) { inner ->
@@ -107,10 +110,13 @@ fun ChatScreen(
             MessageList(
                 messages = messages,
                 ownUid = vm.session?.uid,
+                canModify = vm.authReady,
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
                 onReact = vm::toggleReaction,
                 onReply = vm::startReply,
+                onEdit = vm::startEdit,
+                onDelete = vm::deleteMessage,
                 onJumpTo = { vm.pendingJumpId = it },
                 jumpToId = vm.pendingJumpId,
                 onJumpHandled = { vm.pendingJumpId = null },
@@ -204,10 +210,13 @@ private fun StatusLine(connected: Boolean, onlineCount: Int) {
 private fun MessageList(
     messages: List<MessageDto>,
     ownUid: Long?,
+    canModify: Boolean,
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
     onReact: (Long, String) -> Unit,
     onReply: (MessageDto) -> Unit,
+    onEdit: (MessageDto) -> Unit,
+    onDelete: (Long) -> Unit,
     onJumpTo: (Long) -> Unit,
     jumpToId: Long?,
     onJumpHandled: () -> Unit,
@@ -299,8 +308,11 @@ private fun MessageList(
                     firstInGroup = !groupable(prev, m),
                     lastInGroup = !groupable(m, next),
                     ownUid = ownUid,
+                    canModify = canModify,
                     onReact = { emoji -> onReact(m.id, emoji) },
                     onReply = { onReply(m) },
+                    onEdit = { onEdit(m) },
+                    onDelete = { onDelete(m.id) },
                     onJumpTo = onJumpTo,
                 )
             }
