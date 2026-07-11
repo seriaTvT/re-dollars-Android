@@ -52,6 +52,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil3.compose.AsyncImage
 import mk.ry.redollars.spike.net.MessageDto
@@ -85,6 +86,10 @@ private fun SpikeApp() {
         Surface(modifier = Modifier.fillMaxSize()) {
             val vm: SpikeViewModel = viewModel()
             LaunchedEffect(Unit) { vm.start() }
+            LifecycleStartEffect(Unit) {
+                vm.setForeground(true)
+                onStopOrDispose { vm.setForeground(false) }
+            }
             var webView by remember { mutableStateOf<WebView?>(null) }
 
             Box(Modifier.fillMaxSize()) {

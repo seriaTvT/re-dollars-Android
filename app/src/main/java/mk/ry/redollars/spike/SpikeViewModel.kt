@@ -61,6 +61,9 @@ class SpikeViewModel(app: Application) : AndroidViewModel(app) {
         repo.connect(info.uid) // re-identify as the logged-in user (+ gap sync)
     }
 
+    /** Driven by the UI lifecycle (foreground/background). */
+    fun setForeground(active: Boolean) = repo.setForeground(active)
+
     fun externalLog(line: String) = log(line)
 
     fun beginSend(text: String) {
