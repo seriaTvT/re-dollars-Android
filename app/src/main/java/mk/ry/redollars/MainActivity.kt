@@ -109,7 +109,11 @@ private fun RedollarsApp() {
             }
 
             lightboxUrl?.let { url ->
-                Lightbox(url = url, onDismiss = { lightboxUrl = null })
+                Lightbox(
+                    url = url,
+                    onDismiss = { lightboxUrl = null },
+                    onSaveSticker = { vm.addFavorite(url) },
+                )
             }
         }
     }

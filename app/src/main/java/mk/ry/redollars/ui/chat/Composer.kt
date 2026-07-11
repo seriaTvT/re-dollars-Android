@@ -1,5 +1,9 @@
 package mk.ry.redollars.ui.chat
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material3.FilledIconButton
@@ -73,10 +78,21 @@ fun ChatComposer(
     mentionCandidates: List<UserSearchDto>,
     onPickMention: (UserSearchDto) -> Unit,
     onInsertSmiley: (String) -> Unit,
+    favorites: List<String>,
+    onPickSticker: (String) -> Unit,
+    onUploadFavorite: (Uri) -> Unit,
+    onRemoveFavorite: (String) -> Unit,
+    onAttachImages: (List<Uri>) -> Unit,
     onSend: (String) -> Unit,
     onLogin: () -> Unit,
 ) {
     var showSmilies by rememberSaveable { mutableStateOf(false) }
+    val attachLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9),
+    ) { uris -> if (uris.isNotEmpty()) onAttachImages(uris) }
+    val stickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let(onUploadFavorite) }
 
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding()) {
@@ -118,6 +134,19 @@ fun ChatComposer(
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    IconButton(
+                        onClick = {
+                            attachLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "Attach images",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     OutlinedTextField(
                         value = value,
                         onValueChange = onValueChange,
@@ -157,6 +186,17 @@ fun ChatComposer(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         columns = GridCells.Adaptive(minSize = 44.dp),
                         gridHeight = 240.dp,
+                        favorites = favorites,
+                        onPickSticker = { url ->
+                            onPickSticker(url)
+                            showSmilies = false
+                        },
+                        onUploadFavorite = {
+                            stickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        onRemoveFavorite = onRemoveFavorite,
                     )
                 }
             }

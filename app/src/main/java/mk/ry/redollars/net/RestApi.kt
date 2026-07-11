@@ -132,6 +132,42 @@ class RestApi(private val client: OkHttpClient) {
         client.newCall(req).execute().use { it.isSuccessful }
     }
 
+    /** GET /api/v1/favorites?uid= — saved sticker URLs. Null on failure (vs empty list)
+     *  so callers can keep their local cache. */
+    suspend fun fetchFavorites(uid: Long): List<String>? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/favorites?uid=$uid")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext null
+            runCatching { AppJson.decodeFromString<FavoritesResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.data
+        }
+    }
+
+    /** POST /api/v1/favorites/add {user_id, image_url} */
+    suspend fun addFavorite(uid: Long, url: String): Boolean = favoritePost("add", uid, url)
+
+    /** POST /api/v1/favorites/remove {user_id, image_url} */
+    suspend fun removeFavorite(uid: Long, url: String): Boolean = favoritePost("remove", uid, url)
+
+    private suspend fun favoritePost(action: String, uid: Long, url: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val payload = AppJson.encodeToString(
+                FavoriteRequest.serializer(),
+                FavoriteRequest(userId = uid, imageUrl = url),
+            )
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/favorites/$action")
+                .header("User-Agent", Config.USER_AGENT)
+                .post(payload.toRequestBody(jsonMedia))
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        }
+
     /** GET /api/v1/users/search?q=&exact=true&limit= — mention autocomplete (matches
      *  nickname or username substring; same params as the userscript's completer). */
     suspend fun searchUsers(query: String, limit: Int = 8): List<UserSearchDto> = withContext(Dispatchers.IO) {
@@ -225,6 +261,12 @@ class RestApi(private val client: OkHttpClient) {
 
 @kotlinx.serialization.Serializable
 private data class ConfirmRequest(val uid: Long, val message: String)
+
+@kotlinx.serialization.Serializable
+private data class FavoriteRequest(
+    @kotlinx.serialization.SerialName("user_id") val userId: Long,
+    @kotlinx.serialization.SerialName("image_url") val imageUrl: String,
+)
 
 @kotlinx.serialization.Serializable
 private data class EditRequest(val content: String)

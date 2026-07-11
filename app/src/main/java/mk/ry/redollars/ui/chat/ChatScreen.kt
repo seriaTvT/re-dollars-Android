@@ -73,6 +73,7 @@ fun ChatScreen(
     val messages by vm.messages.collectAsState()
     val typingUsers by vm.typingUsers.collectAsState()
     val notifications by vm.notifications.collectAsState()
+    val favorites by vm.favorites.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
     var showNotifications by rememberSaveable { mutableStateOf(false) }
 
@@ -101,6 +102,11 @@ fun ChatScreen(
                 mentionCandidates = vm.mentionCandidates,
                 onPickMention = vm::pickMention,
                 onInsertSmiley = vm::insertSmiley,
+                favorites = favorites,
+                onPickSticker = vm::insertSticker,
+                onUploadFavorite = vm::uploadFavorite,
+                onRemoveFavorite = vm::removeFavorite,
+                onAttachImages = vm::attachImages,
                 onSend = onSend,
                 onLogin = onOpenLogin,
             )

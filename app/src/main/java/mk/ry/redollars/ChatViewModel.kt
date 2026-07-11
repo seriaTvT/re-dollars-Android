@@ -1,5 +1,7 @@
 package mk.ry.redollars
 
+import android.content.Context
+import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -10,9 +12,11 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
@@ -26,6 +30,7 @@ import mk.ry.redollars.data.MessageRepository
 import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
+import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserSearchDto
 import mk.ry.redollars.net.WsUser
 import javax.inject.Inject
@@ -35,6 +40,7 @@ data class SessionInfo(val uid: Long, val name: String, val formhash: String)
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val repo: MessageRepository,
+    @param:ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
     // ---- Observable state from the repository ----
@@ -44,6 +50,8 @@ class ChatViewModel @Inject constructor(
     val onlineCount: StateFlow<Int> = repo.onlineCount
     val typingUsers: StateFlow<List<WsUser>> = repo.typingUsers
     val notifications: StateFlow<List<NotificationItem>> = repo.notifications
+    /** Saved sticker image URLs (favorites tab in the smiley picker). */
+    val favorites: StateFlow<List<String>> = repo.favorites
 
     // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
@@ -172,11 +180,102 @@ class ChatViewModel @Inject constructor(
         mentionStart = -1
     }
 
-    /** Replace the current selection with a smiley code, cursor after it. */
-    fun insertSmiley(code: String) {
+    /** Replace the current selection with [snippet], cursor after it. */
+    fun insertAtCursor(snippet: String) {
         val v = composerValue
-        val text = v.text.replaceRange(v.selection.min, v.selection.max, code)
-        composerValue = TextFieldValue(text, TextRange(v.selection.min + code.length))
+        val text = v.text.replaceRange(v.selection.min, v.selection.max, snippet)
+        composerValue = TextFieldValue(text, TextRange(v.selection.min + snippet.length))
+    }
+
+    fun insertSmiley(code: String) = insertAtCursor(code)
+
+    /** A saved sticker was picked from the panel (SmileyPanel.tsx insert format). */
+    fun insertSticker(url: String) = insertAtCursor("[sticker]$url[/sticker]")
+
+    // ---- Image upload + sticker favorites ----
+
+    var uploading by mutableStateOf(false)
+        private set
+
+    /** Upload picked images and insert an [img] tag per success. */
+    fun attachImages(uris: List<Uri>) {
+        if (uris.isEmpty() || uploading) return
+        if (!authReady) {
+            sendStatus = "Image upload needs backend authorization (re-login)"
+            return
+        }
+        viewModelScope.launch {
+            uploading = true
+            try {
+                uris.forEachIndexed { i, uri ->
+                    sendStatus = "Uploading image ${i + 1}/${uris.size}…"
+                    val res = readAndUpload(uri)
+                    if (res.url != null) {
+                        insertAtCursor("[img]${res.url}[/img]")
+                    } else {
+                        sendStatus = "Upload failed: ${res.error}"
+                        return@launch
+                    }
+                }
+                sendStatus = if (uris.size > 1) "${uris.size} images attached" else "Image attached"
+            } finally {
+                uploading = false
+            }
+        }
+    }
+
+    /** Upload a picked image straight into the sticker favorites (panel upload tile). */
+    fun uploadFavorite(uri: Uri) {
+        if (uploading) return
+        if (!authReady) {
+            sendStatus = "Sticker upload needs backend authorization (re-login)"
+            return
+        }
+        viewModelScope.launch {
+            uploading = true
+            try {
+                sendStatus = "Uploading sticker…"
+                val res = readAndUpload(uri)
+                if (res.url != null) {
+                    repo.addFavorite(res.url)
+                    sendStatus = "Sticker saved"
+                } else {
+                    sendStatus = "Upload failed: ${res.error}"
+                }
+            } finally {
+                uploading = false
+            }
+        }
+    }
+
+    /** Save an image URL (e.g. from the lightbox) as a sticker favorite. */
+    fun addFavorite(url: String) {
+        viewModelScope.launch {
+            repo.addFavorite(url)
+            sendStatus = "Saved to stickers"
+        }
+    }
+
+    fun removeFavorite(url: String) {
+        viewModelScope.launch { repo.removeFavorite(url) }
+    }
+
+    private suspend fun readAndUpload(uri: Uri): UploadResult = withContext(Dispatchers.IO) {
+        val resolver = appContext.contentResolver
+        val mime = resolver.getType(uri) ?: "image/jpeg"
+        val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            ?: return@withContext UploadResult(error = "Could not read file")
+        if (bytes.size > MAX_IMAGE_BYTES) return@withContext UploadResult(error = "Too large (max 50MB)")
+        val ext = when (mime) {
+            "image/png" -> "png"
+            "image/gif" -> "gif"
+            "image/webp" -> "webp"
+            "image/avif" -> "avif"
+            "image/heic" -> "heic"
+            "image/heif" -> "heif"
+            else -> "jpg"
+        }
+        repo.uploadImage(bytes, "image-${System.currentTimeMillis()}.$ext", mime)
     }
 
     // ---- Mention autocomplete (MentionCompleter.tsx parity) ----
@@ -375,6 +474,10 @@ class ChatViewModel @Inject constructor(
     private fun log(line: String) {
         logs.add(line)
         while (logs.size > 100) logs.removeAt(0)
+    }
+
+    private companion object {
+        const val MAX_IMAGE_BYTES = 50 * 1024 * 1024 // upload server's image cap
     }
 
     // No onCleared: the repository is an app-scoped singleton — its WebSocket is

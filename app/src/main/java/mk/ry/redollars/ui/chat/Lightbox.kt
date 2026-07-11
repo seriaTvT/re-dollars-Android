@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
@@ -35,7 +36,7 @@ import coil3.compose.AsyncImage
  * whole app.
  */
 @Composable
-fun Lightbox(url: String, onDismiss: () -> Unit) {
+fun Lightbox(url: String, onDismiss: () -> Unit, onSaveSticker: (() -> Unit)? = null) {
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -84,6 +85,17 @@ fun Lightbox(url: String, onDismiss: () -> Unit) {
                 modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
             ) {
                 Icon(Icons.Filled.Close, contentDescription = "Close")
+            }
+            if (onSaveSticker != null) {
+                FilledTonalIconButton(
+                    onClick = {
+                        onSaveSticker()
+                        onDismiss()
+                    },
+                    modifier = Modifier.align(Alignment.TopStart).statusBarsPadding().padding(8.dp),
+                ) {
+                    Icon(Icons.Filled.Star, contentDescription = "Save to stickers")
+                }
             }
         }
     }

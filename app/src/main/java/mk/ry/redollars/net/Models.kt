@@ -229,6 +229,13 @@ data class UserAvatarDto(
     val small: String? = null,
 )
 
+/** GET /favorites?uid= — saved sticker image URLs (favorites.ts). */
+@Serializable
+data class FavoritesResponse(
+    val status: Boolean = false,
+    val data: List<String> = emptyList(),
+)
+
 /** GET /users/search — mention autocomplete. username is the login slug (often the
  *  numeric uid for users who never set one); nickname is the display name. */
 @Serializable
