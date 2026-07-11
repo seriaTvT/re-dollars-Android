@@ -38,7 +38,7 @@ val AppJson: Json = Json {
 
 /**
  * A single chat message (subset of the backend EnrichedMessage currently used by the app).
- * Unknown fields (image_meta, link_previews, reply_details, reactions...) are ignored.
+ * Unknown fields (image_meta, link_previews...) are ignored.
  */
 @Serializable
 data class MessageDto(
@@ -52,6 +52,16 @@ data class MessageDto(
     val type: String = "text",
     @SerialName("is_deleted") val isDeleted: Boolean = false,
     @SerialName("reply_details") val replyDetails: ReplyDetails? = null,
+    val reactions: List<ReactionDto> = emptyList(),
+)
+
+/** One user's emoji reaction. `emoji` is unicode or a smiley code like `(bgm67)`. */
+@Serializable
+data class ReactionDto(
+    val emoji: String = "",
+    @SerialName("user_id") val userId: Long = 0,
+    val nickname: String = "",
+    val avatar: String? = null,
 )
 
 /**

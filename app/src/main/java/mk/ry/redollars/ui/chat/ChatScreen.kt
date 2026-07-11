@@ -236,6 +236,7 @@ private fun MessageList(
                     isOwn = ownUid != null && m.uid == ownUid,
                     firstInGroup = !groupable(prev, m),
                     lastInGroup = !groupable(m, next),
+                    ownUid = ownUid,
                 )
             }
         }

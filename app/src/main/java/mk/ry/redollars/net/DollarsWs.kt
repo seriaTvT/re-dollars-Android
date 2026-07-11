@@ -29,6 +29,10 @@ sealed interface WsEvent {
     data class OnlineCount(val count: Int) : WsEvent
     data class NewMessages(val messages: List<MessageDto>) : WsEvent
     data class Typing(val user: WsUser, val typing: Boolean) : WsEvent
+    data class ReactionAdd(val messageId: Long, val reaction: ReactionDto) : WsEvent
+    data class ReactionRemove(val messageId: Long, val userId: Long, val emoji: String) : WsEvent
+    data class MessageDeleted(val messageId: Long) : WsEvent
+    data class MessageEdited(val message: MessageDto) : WsEvent
     data class Log(val line: String) : WsEvent
 }
 
@@ -181,8 +185,40 @@ class DollarsWs(
                     )
                 }
 
+                "reaction_add" -> {
+                    val payload = obj["payload"] as? JsonObject ?: return
+                    val messageId = payload["message_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
+                    val reaction = payload["reaction"]?.let { el ->
+                        runCatching { AppJson.decodeFromJsonElement(ReactionDto.serializer(), el) }.getOrNull()
+                    } ?: return
+                    onEvent(WsEvent.ReactionAdd(messageId, reaction))
+                }
+
+                "reaction_remove" -> {
+                    val payload = obj["payload"] as? JsonObject ?: return
+                    val messageId = payload["message_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
+                    val userId = payload["user_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
+                    val emoji = payload["emoji"]?.jsonPrimitive?.contentOrNull ?: return
+                    onEvent(WsEvent.ReactionRemove(messageId, userId, emoji))
+                }
+
+                "message_delete" -> {
+                    val payload = obj["payload"] as? JsonObject ?: return
+                    val id = payload["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
+                    onEvent(WsEvent.MessageDeleted(id))
+                }
+
+                "message_edit" -> {
+                    // Payload is the full re-enriched message.
+                    val payload = obj["payload"] ?: return
+                    val message = runCatching {
+                        AppJson.decodeFromJsonElement(MessageDto.serializer(), payload)
+                    }.getOrNull() ?: return
+                    onEvent(WsEvent.MessageEdited(message))
+                }
+
                 "pong" -> { /* heartbeat ack */ }
-                else -> { /* presence_update/reactions/etc. not yet handled */ }
+                else -> { /* presence_update etc. not yet handled */ }
             }
         }
 

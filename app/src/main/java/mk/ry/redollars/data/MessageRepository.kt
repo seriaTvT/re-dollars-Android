@@ -19,6 +19,7 @@ import mk.ry.redollars.di.ApplicationScope
 import kotlinx.coroutines.Job
 import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
@@ -137,8 +138,33 @@ class MessageRepository @Inject constructor(
                 for (m in event.messages) clearTyping(m.uid)
             }
             is WsEvent.Typing -> onTyping(event)
+            is WsEvent.ReactionAdd -> scope.launch {
+                patchReactions(event.messageId) { list ->
+                    // The server broadcasts remove-then-add on replace, but dedupe anyway.
+                    list.filterNot { it.userId == event.reaction.userId && it.emoji == event.reaction.emoji } +
+                        event.reaction
+                }
+            }
+            is WsEvent.ReactionRemove -> scope.launch {
+                patchReactions(event.messageId) { list ->
+                    list.filterNot { it.userId == event.userId && it.emoji == event.emoji }
+                }
+            }
+            is WsEvent.MessageDeleted -> scope.launch { dao.markDeleted(event.messageId) }
+            is WsEvent.MessageEdited -> scope.launch {
+                dao.upsertAll(listOf(event.message.toEntity()))
+            }
             is WsEvent.Log -> log(event.line)
         }
+    }
+
+    private suspend fun patchReactions(
+        messageId: Long,
+        transform: (List<ReactionDto>) -> List<ReactionDto>,
+    ) {
+        val row = dao.getById(messageId) ?: return // not cached; next fetch carries them
+        val dto = row.toDto()
+        dao.upsertAll(listOf(dto.copy(reactions = transform(dto.reactions)).toEntity()))
     }
 
     private fun onTyping(event: WsEvent.Typing) {
