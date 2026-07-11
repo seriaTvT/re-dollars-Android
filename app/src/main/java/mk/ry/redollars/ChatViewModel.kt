@@ -41,6 +41,8 @@ class ChatViewModel @Inject constructor(
     var session by mutableStateOf<SessionInfo?>(null); private set
     var showLogin by mutableStateOf(false)
     var sendStatus by mutableStateOf<String?>(null); private set
+    var loadingOlder by mutableStateOf(false); private set
+    var historyExhausted by mutableStateOf(false); private set
     val logs: SnapshotStateList<String> = mutableStateListOf()
 
     private var started = false
@@ -61,6 +63,20 @@ class ChatViewModel @Inject constructor(
         showLogin = false
         log("Session ready: uid=${info.uid} name=${info.name}")
         repo.connect(info.uid) // re-identify as the logged-in user (+ gap sync)
+    }
+
+    /** Page one more window of history above the oldest displayed message. */
+    fun loadOlder() {
+        if (loadingOlder || historyExhausted) return
+        val oldest = messages.value.firstOrNull()?.id ?: return
+        viewModelScope.launch {
+            loadingOlder = true
+            try {
+                if (repo.loadOlder(oldest) < 0) historyExhausted = true
+            } finally {
+                loadingOlder = false
+            }
+        }
     }
 
     /** Driven by the UI lifecycle (foreground/background). */

@@ -1,6 +1,7 @@
 package mk.ry.redollars.data
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -8,6 +9,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import mk.ry.redollars.data.db.MessageDao
@@ -39,8 +41,13 @@ class MessageRepository @Inject constructor(
     private val rest = RestApi(http)
     private val ws = DollarsWs(http, scope, ::onWsEvent)
 
-    val messages: Flow<List<MessageDto>> =
-        dao.observeRecent(300).map { rows -> rows.map { it.toDto() } }
+    /** How many of the newest cached rows the UI shows; grows as the user pages up. */
+    private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val messages: Flow<List<MessageDto>> = displayLimit
+        .flatMapLatest { limit -> dao.observeRecent(limit) }
+        .map { rows -> rows.map { it.toDto() } }
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -73,6 +80,26 @@ class MessageRepository @Inject constructor(
         log("Synced ${fetched.size} messages (since_db_id=$since)")
     }
 
+    /**
+     * Make one more page of history (older than [beforeId], the oldest displayed id)
+     * visible. Cache-first: only hits REST when the cache runs out. Returns the number
+     * of additional rows now available, or -1 when history is exhausted.
+     */
+    suspend fun loadOlder(beforeId: Long): Int {
+        val cached = dao.countOlderThan(beforeId)
+        if (cached >= PAGE_SIZE) {
+            displayLimit.value += PAGE_SIZE
+            return PAGE_SIZE
+        }
+        val fetched = runCatching { rest.fetchHistory(beforeId, PAGE_SIZE) }.getOrDefault(emptyList())
+        if (fetched.isNotEmpty()) dao.upsertAll(fetched.map { it.toEntity() })
+        log("History: +${fetched.size} fetched before id=$beforeId (cached older=$cached)")
+        val available = cached + fetched.size
+        if (available == 0) return -1
+        displayLimit.value += available
+        return available
+    }
+
     suspend fun confirm(uid: Long, content: String): MessageDto? {
         val res = runCatching { rest.confirm(uid, content) }.getOrNull()
         val msg = if (res?.found == true) res.message else null
@@ -97,5 +124,10 @@ class MessageRepository @Inject constructor(
 
     private fun log(line: String) {
         _logs.tryEmit(line)
+    }
+
+    private companion object {
+        const val INITIAL_WINDOW = 300
+        const val PAGE_SIZE = 60
     }
 }

@@ -17,6 +17,10 @@ interface MessageDao {
     @Query("SELECT MAX(id) FROM messages")
     suspend fun maxId(): Long?
 
+    /** How many cached rows are older than [id] (paging: can we serve from cache?). */
+    @Query("SELECT COUNT(*) FROM messages WHERE id < :id")
+    suspend fun countOlderThan(id: Long): Int
+
     @Query("UPDATE messages SET isDeleted = 1 WHERE id = :id")
     suspend fun markDeleted(id: Long)
 }
