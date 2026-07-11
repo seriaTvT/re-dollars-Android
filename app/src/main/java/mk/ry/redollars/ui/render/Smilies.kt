@@ -36,4 +36,15 @@ object Smilies {
     }
 
     private fun pad2(n: Int) = n.toString().padStart(2, '0')
+
+    /** A pickable smiley group (ported from smileyRangesWithoutFavorites: TV/BGM/VS/500;
+     *  musume/blake are excluded as large stickers, BMO needs the site's renderer). */
+    data class Group(val name: String, val codes: List<String>, val iconCode: String)
+
+    val pickerGroups: List<Group> = listOf(
+        Group("TV", (24..125).map { "(bgm$it)" }, "(bgm24)"),
+        Group("BGM", (1..23).map { "(bgm$it)" }, "(bgm1)"),
+        Group("VS", (200..238).map { "(bgm$it)" }, "(bgm200)"),
+        Group("500", (500..529).map { "(bgm$it)" }, "(bgm500)"),
+    )
 }

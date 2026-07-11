@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -138,24 +142,48 @@ fun MessageRow(
                     }
                 }
 
+                var showFullPicker by remember { mutableStateOf(false) }
                 DropdownMenu(
                     expanded = showQuickReact,
-                    onDismissRequest = { showQuickReact = false },
+                    onDismissRequest = {
+                        showQuickReact = false
+                        showFullPicker = false
+                    },
                 ) {
-                    Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp)) {
-                        QUICK_REACTIONS.forEach { code ->
-                            AsyncImage(
-                                model = Smilies.urlFor(code),
-                                contentDescription = code,
-                                modifier = Modifier
-                                    .padding(horizontal = 4.dp)
-                                    .size(28.dp)
-                                    .clickable {
-                                        showQuickReact = false
-                                        onReact(code)
-                                    },
-                            )
+                    if (!showFullPicker) {
+                        Row(
+                            Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            QUICK_REACTIONS.forEach { code ->
+                                AsyncImage(
+                                    model = Smilies.urlFor(code),
+                                    contentDescription = code,
+                                    modifier = Modifier
+                                        .padding(horizontal = 4.dp)
+                                        .size(28.dp)
+                                        .clickable {
+                                            showQuickReact = false
+                                            onReact(code)
+                                        },
+                                )
+                            }
+                            IconButton(onClick = { showFullPicker = true }) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = "More reactions",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
+                    } else {
+                        ReactionPicker(
+                            onPick = { code ->
+                                showQuickReact = false
+                                showFullPicker = false
+                                onReact(code)
+                            },
+                        )
                     }
                 }
             }
