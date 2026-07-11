@@ -2,6 +2,7 @@ package mk.ry.redollars.data.db
 
 import androidx.room.Dao
 import androidx.room.Query
+import androidx.room.Transaction
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -26,4 +27,14 @@ interface MessageDao {
 
     @Query("UPDATE messages SET isDeleted = 1 WHERE id = :id")
     suspend fun markDeleted(id: Long)
+
+    @Query("DELETE FROM messages")
+    suspend fun clearAll()
+
+    /** Atomically swap the cache for [items] (it fell too far behind the live tail). */
+    @Transaction
+    suspend fun replaceAll(items: List<MessageEntity>) {
+        clearAll()
+        upsertAll(items)
+    }
 }

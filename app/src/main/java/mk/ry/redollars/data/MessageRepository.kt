@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import mk.ry.redollars.data.db.MessageDao
 import mk.ry.redollars.data.db.toDto
 import mk.ry.redollars.data.db.toEntity
@@ -157,14 +158,68 @@ class MessageRepository @Inject constructor(
         if (active) scope.launch { syncNewer() }
     }
 
-    /** Fetch everything newer than the highest cached id (or a recent window when empty). */
+    private val syncMutex = Mutex()
+
+    /**
+     * Catch up on everything newer than the highest cached id. The backend caps each
+     * /messages page at 100 rows and serves since_db_id in *ascending* id order, so
+     * after a long absence one call only yields the oldest slice of the backlog.
+     * Strategy: fetch the live tail first, then either upsert it directly (it overlaps
+     * the cache), backfill the gap page by page, or — when the backlog is deeper than
+     * [MAX_CATCHUP_PAGES] pages — swap the cache for the tail. The cached timeline must
+     * never keep a hole, because [loadOlder] pages the cache as if it were contiguous.
+     */
     suspend fun syncNewer() {
-        val since = dao.maxId() ?: 0L
-        val fetched = runCatching {
-            if (since <= 0L) rest.fetchRecent(60) else rest.fetchNewer(since, 200)
-        }.getOrDefault(emptyList())
-        if (fetched.isNotEmpty()) dao.upsertAll(fetched.map { it.toEntity() })
-        log("Synced ${fetched.size} messages (since_db_id=$since)")
+        if (!syncMutex.tryLock()) return // an in-flight sync already covers us
+        try {
+            val since = dao.maxId() ?: 0L
+            val tail = runCatching { rest.fetchRecent(CATCHUP_PAGE) }.getOrDefault(emptyList())
+            if (tail.isEmpty()) {
+                log("Sync: tail fetch failed (since_db_id=$since)")
+                return
+            }
+            val tailMin = tail.minOf { it.id }
+            val tailRows = tail.map { it.toEntity() }
+
+            // Empty cache, or the tail reaches back to what we already have: no gap.
+            if (since <= 0L || tailMin <= since + 1) {
+                dao.upsertAll(tailRows)
+                log("Synced ${tail.count { it.id > since }} messages (since_db_id=$since)")
+                return
+            }
+
+            // Deeper than we're willing to backfill: reset to the live tail. Older
+            // history re-fetches from the server on demand.
+            if (tailMin - since > MAX_CATCHUP_PAGES.toLong() * CATCHUP_PAGE) {
+                dao.replaceAll(tailRows)
+                displayLimit.value = INITIAL_WINDOW
+                log("Too far behind (gap≈${tailMin - since}); reset cache to latest ${tail.size}")
+                return
+            }
+
+            // Shallow gap: bridge it forward, then attach the tail.
+            var cursor = since
+            var pages = 0
+            while (cursor < tailMin - 1 && pages < MAX_CATCHUP_PAGES) {
+                val page = runCatching { rest.fetchNewer(cursor, CATCHUP_PAGE) }
+                    .getOrDefault(emptyList())
+                if (page.isEmpty()) break // network error mid-bridge
+                dao.upsertAll(page.map { it.toEntity() })
+                cursor = page.maxOf { it.id }
+                pages++
+            }
+            if (cursor >= tailMin - 1) {
+                dao.upsertAll(tailRows)
+                log("Synced gap of ${cursor - since} + tail (since_db_id=$since)")
+            } else {
+                // Couldn't close the gap; swapping to the tail beats keeping a hole.
+                dao.replaceAll(tailRows)
+                displayLimit.value = INITIAL_WINDOW
+                log("Bridge failed at id=$cursor; reset cache to latest ${tail.size}")
+            }
+        } finally {
+            syncMutex.unlock()
+        }
     }
 
     /**
@@ -293,6 +348,10 @@ class MessageRepository @Inject constructor(
     private companion object {
         const val INITIAL_WINDOW = 300
         const val PAGE_SIZE = 60
+        /** Server-side maximum page size for /messages (larger limits are clamped). */
+        const val CATCHUP_PAGE = 100
+        /** Backfill at most this many pages before jumping to the live tail instead. */
+        const val MAX_CATCHUP_PAGES = 5
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
     }
 }
