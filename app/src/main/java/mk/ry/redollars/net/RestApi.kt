@@ -54,6 +54,21 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /** GET /api/v1/users/:id — resolve the true display nickname + avatar for a uid. */
+    suspend fun getUser(uid: Long): UserProfileDto? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/users/$uid")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext null
+            runCatching { AppJson.decodeFromString<UserLookupResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.data
+        }
+    }
+
     /** GET /api/v1/messages/status?since_db_id= */
     suspend fun status(sinceDbId: Long = 0): MessageStatus? = withContext(Dispatchers.IO) {
         val req = Request.Builder()

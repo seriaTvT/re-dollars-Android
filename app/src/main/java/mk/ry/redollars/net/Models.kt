@@ -99,3 +99,25 @@ data class ReactionToggleResponse(
     val action: String = "",
     val data: ReactionDto? = null,
 )
+
+/** GET /users/:id — backend profile cache. nickname is the display name (username is the slug). */
+@Serializable
+data class UserLookupResponse(
+    val status: Boolean = false,
+    val data: UserProfileDto? = null,
+)
+
+@Serializable
+data class UserProfileDto(
+    val id: Long = 0,
+    val username: String = "",
+    val nickname: String = "",
+    val avatar: UserAvatarDto? = null,
+)
+
+@Serializable
+data class UserAvatarDto(
+    val large: String? = null,
+    val medium: String? = null,
+    val small: String? = null,
+)

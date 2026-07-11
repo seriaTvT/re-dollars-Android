@@ -64,9 +64,19 @@ class ChatViewModel @Inject constructor(
     fun onLoggedIn(info: SessionInfo) {
         session = info
         showLogin = false
-        log("Session ready: uid=${info.uid} name=${info.name}")
-        // Re-identify + join (share presence) so our typing/presence is attributed.
-        repo.connect(info.uid, info.name)
+        viewModelScope.launch {
+            // The page-extracted name is the login slug (or a uid fallback), NOT the
+            // display nickname — resolve the real one from the backend profile cache
+            // before joining, or other clients would show the wrong name for our
+            // typing frames and reactions.
+            val profile = repo.fetchUserProfile(info.uid)
+            val nickname = profile?.nickname?.takeIf { it.isNotBlank() } ?: info.name
+            val avatar = profile?.avatar?.let { it.medium ?: it.large ?: it.small }
+            session = info.copy(name = nickname)
+            log("Session ready: uid=${info.uid} nickname=$nickname (profile=${profile != null})")
+            // Re-identify + join (share presence) so our typing/presence is attributed.
+            repo.connect(info.uid, nickname, avatar)
+        }
     }
 
     // ---- Composer typing signals: start immediately, stop after 2.5s idle or on send. ----
