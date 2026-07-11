@@ -7,7 +7,9 @@ import coil3.SingletonImageLoader
 import coil3.gif.GifDecoder
 import coil3.network.okhttp.OkHttpNetworkFetcherFactory
 import coil3.request.crossfade
+import dagger.hilt.android.HiltAndroidApp
 
+@HiltAndroidApp
 class App : Application(), SingletonImageLoader.Factory {
     override fun newImageLoader(context: PlatformContext): ImageLoader =
         ImageLoader.Builder(context)

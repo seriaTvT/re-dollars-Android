@@ -1,6 +1,5 @@
 package mk.ry.redollars.data
 
-import android.content.Context
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -11,30 +10,32 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import mk.ry.redollars.data.db.AppDatabase
+import mk.ry.redollars.data.db.MessageDao
 import mk.ry.redollars.data.db.toDto
 import mk.ry.redollars.data.db.toEntity
+import mk.ry.redollars.di.ApplicationScope
 import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.WsEvent
 import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Single source of truth for chat messages. Room is authoritative; REST and the
  * WebSocket both write into it, and the UI observes [messages]. Cold start shows the
  * cached rows immediately, then [connect] triggers a gap-recovery sync.
+ *
+ * App-scoped singleton: the WebSocket and DB writes survive configuration changes;
+ * [setForeground] quiesces the socket when the UI is hidden.
  */
-class MessageRepository(context: Context, private val scope: CoroutineScope) {
-
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(0, TimeUnit.SECONDS) // we send our own JSON heartbeat
-        .build()
-
-    private val dao = AppDatabase.get(context).messageDao()
+@Singleton
+class MessageRepository @Inject constructor(
+    private val dao: MessageDao,
+    http: OkHttpClient,
+    @ApplicationScope private val scope: CoroutineScope,
+) {
     private val rest = RestApi(http)
     private val ws = DollarsWs(http, scope, ::onWsEvent)
 

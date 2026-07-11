@@ -1,6 +1,7 @@
 package mk.ry.redollars
 
 import android.os.Bundle
+import dagger.hilt.android.AndroidEntryPoint
 import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -25,12 +26,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
-import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.hilt.navigation.compose.hiltViewModel
 import mk.ry.redollars.ui.chat.ChatScreen
 import mk.ry.redollars.ui.chat.Lightbox
 import mk.ry.redollars.ui.render.LocalImageViewer
 import mk.ry.redollars.ui.theme.RedollarsTheme
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,7 +45,7 @@ class MainActivity : ComponentActivity() {
 private fun RedollarsApp() {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
-            val vm: ChatViewModel = viewModel()
+            val vm: ChatViewModel = hiltViewModel()
             LaunchedEffect(Unit) { vm.start() }
             LifecycleStartEffect(Unit) {
                 vm.setForeground(true)
