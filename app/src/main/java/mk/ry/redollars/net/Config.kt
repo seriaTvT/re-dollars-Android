@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.net
+package mk.ry.redollars.net
 
 /** Ported from re-dollars-preact/src/utils/constants.ts */
 object Config {
@@ -15,7 +15,7 @@ object Config {
     const val AVATAR_BASE = "https://lain.bgm.tv/pic/user/l/"
 
     const val USER_AGENT =
-        "Mozilla/5.0 (Linux; Android) ReDollarsAndroidSpike/0.1"
+        "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/0.2"
 
     const val HEARTBEAT_INTERVAL_MS = 25_000L
     const val RECONNECT_DELAY_MS = 2_000L

@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.theme
+package mk.ry.redollars.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme

@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.net
+package mk.ry.redollars.net
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -7,7 +7,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
 
-/** Read-only backend REST calls used by the spike (no auth needed). */
+/** Read-only backend REST calls (no auth needed). */
 class RestApi(private val client: OkHttpClient) {
 
     private val jsonMedia = "application/json".toMediaType()

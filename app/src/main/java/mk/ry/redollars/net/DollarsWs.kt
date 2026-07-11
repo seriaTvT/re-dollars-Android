@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.net
+package mk.ry.redollars.net
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -140,7 +140,7 @@ class DollarsWs(
                 }
 
                 "pong" -> { /* heartbeat ack */ }
-                else -> { /* typing/presence/etc. ignored in the spike */ }
+                else -> { /* typing/presence/etc. not yet handled */ }
             }
         }
 

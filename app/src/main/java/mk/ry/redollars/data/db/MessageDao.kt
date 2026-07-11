@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.data.db
+package mk.ry.redollars.data.db
 
 import androidx.room.Dao
 import androidx.room.Query

@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.render
+package mk.ry.redollars.ui.render
 
 /**
  * Resolves a smiley token like `(bgm67)`, `(musume_12)`, `(blake_05)` to an absolute

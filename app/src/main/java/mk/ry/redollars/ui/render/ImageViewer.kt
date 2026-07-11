@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.render
+package mk.ry.redollars.ui.render
 
 import androidx.compose.runtime.staticCompositionLocalOf
 

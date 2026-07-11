@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike
+package mk.ry.redollars
 
 import android.app.Application
 import androidx.compose.runtime.getValue
@@ -19,13 +19,13 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import mk.ry.redollars.spike.data.MessageRepository
-import mk.ry.redollars.spike.net.AppJson
-import mk.ry.redollars.spike.net.MessageDto
+import mk.ry.redollars.data.MessageRepository
+import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.MessageDto
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
 
-class SpikeViewModel(app: Application) : AndroidViewModel(app) {
+class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = MessageRepository(app, viewModelScope)
 

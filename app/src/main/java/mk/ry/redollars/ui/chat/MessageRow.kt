@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.chat
+package mk.ry.redollars.ui.chat
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,10 +27,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
-import mk.ry.redollars.spike.net.MessageDto
-import mk.ry.redollars.spike.ui.render.BBCodeMessage
-import mk.ry.redollars.spike.ui.render.ReplyHeader
-import mk.ry.redollars.spike.ui.render.avatarUrl
+import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.ui.render.BBCodeMessage
+import mk.ry.redollars.ui.render.ReplyHeader
+import mk.ry.redollars.ui.render.avatarUrl
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter

@@ -1,4 +1,4 @@
-package mk.ry.redollars.spike.ui.chat
+package mk.ry.redollars.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -47,8 +47,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
-import mk.ry.redollars.spike.SpikeViewModel
-import mk.ry.redollars.spike.net.MessageDto
+import mk.ry.redollars.ChatViewModel
+import mk.ry.redollars.net.MessageDto
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -58,7 +58,7 @@ import java.time.temporal.ChronoUnit
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
-    vm: SpikeViewModel,
+    vm: ChatViewModel,
     onSend: (String) -> Unit,
     onOpenLogin: () -> Unit,
 ) {
