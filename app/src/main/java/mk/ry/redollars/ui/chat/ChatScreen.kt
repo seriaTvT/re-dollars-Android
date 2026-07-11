@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,12 +41,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import mk.ry.redollars.ChatViewModel
 import mk.ry.redollars.net.MessageDto
@@ -90,7 +93,13 @@ fun ChatScreen(
             AnimatedVisibility(visible = showDebug) {
                 DebugPanel(vm.logs, connected, onlineCount, vm.session)
             }
-            MessageList(messages, vm.session?.uid, Modifier.weight(1f))
+            MessageList(
+                messages = messages,
+                ownUid = vm.session?.uid,
+                loadingOlder = vm.loadingOlder,
+                onLoadOlder = vm::loadOlder,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -150,7 +159,13 @@ private fun StatusLine(connected: Boolean, onlineCount: Int) {
 }
 
 @Composable
-private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Modifier = Modifier) {
+private fun MessageList(
+    messages: List<MessageDto>,
+    ownUid: Long?,
+    loadingOlder: Boolean,
+    onLoadOlder: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -164,27 +179,35 @@ private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Mod
     }
 
     var newCount by remember { mutableStateOf(0) }
-    var prevSize by remember { mutableStateOf(0) }
+    var prevLastId by remember { mutableStateOf(0L) }
     var initialized by remember { mutableStateOf(false) }
 
-    LaunchedEffect(messages.size) {
-        val size = messages.size
+    // Track the newest id, not the list size: history prepends grow the list from the
+    // top and must neither auto-scroll nor count toward the "new messages" badge.
+    LaunchedEffect(messages) {
+        val lastId = messages.lastOrNull()?.id ?: return@LaunchedEffect
         when {
-            size == 0 -> Unit
             !initialized -> {
-                listState.scrollToItem(size - 1) // land at the bottom on first load
+                listState.scrollToItem(messages.size - 1) // land at the bottom on first load
                 initialized = true
             }
-            size > prevSize -> {
-                if (atBottom) listState.animateScrollToItem(size - 1)
-                else newCount += size - prevSize // arrived while scrolled up
+            lastId > prevLastId -> {
+                if (atBottom) listState.animateScrollToItem(messages.size - 1)
+                else newCount += messages.count { it.id > prevLastId }
             }
         }
-        prevSize = size
+        prevLastId = lastId
     }
 
     // Reaching the bottom (manually or via the pill) clears the unread badge.
     LaunchedEffect(atBottom) { if (atBottom) newCount = 0 }
+
+    // Nearing the top pages in older history (VM guards re-entrancy/exhaustion).
+    LaunchedEffect(listState) {
+        snapshotFlow { initialized && listState.firstVisibleItemIndex <= 3 }
+            .filter { it }
+            .collect { onLoadOlder() }
+    }
 
     Box(modifier.fillMaxSize()) {
         LazyColumn(
@@ -192,6 +215,13 @@ private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Mod
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(vertical = 6.dp),
         ) {
+            if (loadingOlder) {
+                item(key = "history-spinner") {
+                    Box(Modifier.fillMaxWidth().padding(8.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    }
+                }
+            }
             itemsIndexed(messages, key = { _, m -> m.id }) { i, m ->
                 val prev = messages.getOrNull(i - 1)
                 val next = messages.getOrNull(i + 1)
