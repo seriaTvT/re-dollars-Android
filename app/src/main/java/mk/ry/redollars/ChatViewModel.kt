@@ -23,6 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import mk.ry.redollars.data.MessageRepository
 import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.WsUser
 import javax.inject.Inject
 
@@ -39,6 +40,7 @@ class ChatViewModel @Inject constructor(
     val connected: StateFlow<Boolean> = repo.connected
     val onlineCount: StateFlow<Int> = repo.onlineCount
     val typingUsers: StateFlow<List<WsUser>> = repo.typingUsers
+    val notifications: StateFlow<List<NotificationItem>> = repo.notifications
 
     // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
@@ -46,6 +48,8 @@ class ChatViewModel @Inject constructor(
     var sendStatus by mutableStateOf<String?>(null); private set
     var loadingOlder by mutableStateOf(false); private set
     var historyExhausted by mutableStateOf(false); private set
+    /** Message id the list should scroll to (set when opening a notification). */
+    var pendingJumpId by mutableStateOf<Long?>(null)
     val logs: SnapshotStateList<String> = mutableStateListOf()
 
     private var started = false
@@ -107,6 +111,16 @@ class ChatViewModel @Inject constructor(
             typingActive = false
             repo.sendTyping(false)
         }
+    }
+
+    /** Open a notification: mark it read and ask the list to jump to its message. */
+    fun openNotification(item: NotificationItem) {
+        viewModelScope.launch { repo.markNotificationRead(item.id) }
+        pendingJumpId = item.messageId
+    }
+
+    fun markAllNotificationsRead() {
+        viewModelScope.launch { repo.markAllNotificationsRead() }
     }
 
     /** Toggle a reaction as the logged-in user (tap a chip or pick from long-press). */

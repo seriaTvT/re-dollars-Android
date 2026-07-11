@@ -54,6 +54,41 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /** GET /api/v1/notifications?uid= — unread mention/reply notifications, newest first. */
+    suspend fun fetchNotifications(uid: Long): List<NotificationItem> = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/notifications?uid=$uid")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
+            runCatching { AppJson.decodeFromString<NotificationsResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.notifications?.map { it.toItem() } ?: emptyList()
+        }
+    }
+
+    /** POST /api/v1/notifications/:id/read {uid} */
+    suspend fun markNotificationRead(id: Long, uid: Long): Boolean = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/notifications/$id/read")
+            .header("User-Agent", Config.USER_AGENT)
+            .post("""{"uid":$uid}""".toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
+
+    /** POST /api/v1/notifications/read-all {uid} */
+    suspend fun markAllNotificationsRead(uid: Long): Boolean = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/notifications/read-all")
+            .header("User-Agent", Config.USER_AGENT)
+            .post("""{"uid":$uid}""".toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
+
     /** GET /api/v1/users/:id — resolve the true display nickname + avatar for a uid. */
     suspend fun getUser(uid: Long): UserProfileDto? = withContext(Dispatchers.IO) {
         val req = Request.Builder()

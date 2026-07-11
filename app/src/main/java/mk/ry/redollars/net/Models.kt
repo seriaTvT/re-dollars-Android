@@ -100,6 +100,78 @@ data class ReactionToggleResponse(
     val data: ReactionDto? = null,
 )
 
+/** A mention/reply notification, unified from the two wire shapes (REST nested, WS flat). */
+data class NotificationItem(
+    val id: Long,
+    val type: String, // mention | reply
+    val timestamp: Long,
+    val messageId: Long,
+    val uid: Long,
+    val nickname: String,
+    val avatar: String,
+    val content: String,
+)
+
+/** GET /notifications?uid= response: unread only, newest first, max 50. */
+@Serializable
+data class NotificationsResponse(
+    val status: Boolean = false,
+    val notifications: List<NotificationRestDto> = emptyList(),
+)
+
+@Serializable
+data class NotificationRestDto(
+    val id: Long = 0,
+    val type: String = "mention",
+    @Serializable(with = FlexLongSerializer::class) val timestamp: Long = 0,
+    @SerialName("message_id") @Serializable(with = FlexLongSerializer::class) val messageId: Long = 0,
+    val message: NotificationMessageDto? = null,
+) {
+    fun toItem() = NotificationItem(
+        id = id,
+        type = type,
+        timestamp = timestamp,
+        messageId = messageId,
+        uid = message?.uid?.toLongOrNull() ?: 0,
+        nickname = message?.nickname ?: "",
+        avatar = message?.avatar ?: "",
+        content = message?.content ?: "",
+    )
+}
+
+@Serializable
+data class NotificationMessageDto(
+    val id: String = "",
+    val uid: String = "",
+    val nickname: String = "",
+    val avatar: String = "",
+    val content: String = "",
+)
+
+/** WS `notification` frame payload (flat). */
+@Serializable
+data class NotificationWsDto(
+    val id: Long = 0,
+    @SerialName("message_id") @Serializable(with = FlexLongSerializer::class) val messageId: Long = 0,
+    @Serializable(with = FlexLongSerializer::class) val uid: Long = 0,
+    val nickname: String = "",
+    val avatar: String = "",
+    val content: String = "",
+    @Serializable(with = FlexLongSerializer::class) val timestamp: Long = 0,
+    val type: String = "mention",
+) {
+    fun toItem() = NotificationItem(
+        id = id,
+        type = type,
+        timestamp = timestamp,
+        messageId = messageId,
+        uid = uid,
+        nickname = nickname,
+        avatar = avatar,
+        content = content,
+    )
+}
+
 /** GET /users/:id — backend profile cache. nickname is the display name (username is the slug). */
 @Serializable
 data class UserLookupResponse(
