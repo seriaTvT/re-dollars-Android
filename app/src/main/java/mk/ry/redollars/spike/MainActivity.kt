@@ -38,6 +38,7 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -149,6 +150,9 @@ private fun buildPostJs(text: String): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MainScreen(vm: SpikeViewModel, onSend: (String) -> Unit) {
+    val connected by vm.connected.collectAsState()
+    val onlineCount by vm.onlineCount.collectAsState()
+    val messages by vm.messages.collectAsState()
     Scaffold(
         topBar = {
             TopAppBar(title = {
@@ -157,13 +161,13 @@ private fun MainScreen(vm: SpikeViewModel, onSend: (String) -> Unit) {
                         Modifier
                             .size(10.dp)
                             .clip(CircleShape)
-                            .background(if (vm.connected) Color(0xFF34C759) else Color(0xFFFF3B30)),
+                            .background(if (connected) Color(0xFF34C759) else Color(0xFFFF3B30)),
                     )
                     Spacer(Modifier.width(8.dp))
                     Text("Re:Dollars Spike")
                     Spacer(Modifier.width(12.dp))
                     Text(
-                        "● ${vm.onlineCount} online",
+                        "● $onlineCount online",
                         fontSize = 13.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -174,7 +178,7 @@ private fun MainScreen(vm: SpikeViewModel, onSend: (String) -> Unit) {
         Column(Modifier.fillMaxSize().padding(padding)) {
             SessionBar(vm)
             HorizontalDivider()
-            MessageFeed(vm.messages, Modifier.weight(1f))
+            MessageFeed(messages, Modifier.weight(1f))
             LogPanel(vm.logs)
             HorizontalDivider()
             Composer(

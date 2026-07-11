@@ -1,81 +1,68 @@
 package mk.ry.redollars.spike
 
+import android.app.Application
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import mk.ry.redollars.spike.data.MessageRepository
 import mk.ry.redollars.spike.net.AppJson
-import mk.ry.redollars.spike.net.DollarsWs
 import mk.ry.redollars.spike.net.MessageDto
-import mk.ry.redollars.spike.net.RestApi
-import mk.ry.redollars.spike.net.WsEvent
-import okhttp3.OkHttpClient
-import java.util.concurrent.TimeUnit
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
 
-class SpikeViewModel : ViewModel() {
+class SpikeViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val http = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .pingInterval(0, TimeUnit.SECONDS) // we send our own JSON heartbeat
-        .build()
+    private val repo = MessageRepository(app, viewModelScope)
 
-    private val rest = RestApi(http)
-    private val ws = DollarsWs(http, viewModelScope, ::onWsEvent)
+    // ---- Observable state from the repository ----
+    val messages: StateFlow<List<MessageDto>> =
+        repo.messages.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val connected: StateFlow<Boolean> = repo.connected
+    val onlineCount: StateFlow<Int> = repo.onlineCount
 
-    // ---- UI state ----
-    var connected by mutableStateOf(false); private set
-    var onlineCount by mutableIntStateOf(0); private set
+    // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
     var showLogin by mutableStateOf(false)
     var sendStatus by mutableStateOf<String?>(null); private set
-
-    val messages: SnapshotStateList<MessageDto> = mutableStateListOf()
     val logs: SnapshotStateList<String> = mutableStateListOf()
 
-    private val seenIds = HashSet<Long>()
     private var started = false
     private var pendingText = ""
+
+    init {
+        viewModelScope.launch { repo.logs.collect { log(it) } }
+    }
 
     fun start() {
         if (started) return
         started = true
-        loadRecent()
-        ws.connect(uid = 0) // anonymous read connection until the user logs in
-    }
-
-    fun loadRecent() = viewModelScope.launch {
-        log("REST GET /messages…")
-        val recent = runCatching { rest.fetchRecent(40) }.getOrDefault(emptyList())
-        val status = runCatching { rest.status(0) }.getOrNull()
-        mergeMessages(recent)
-        log("Loaded ${recent.size} messages; latest_id=${status?.latestId ?: "?"}, total=${status?.newCount ?: "?"}")
+        repo.connect(uid = 0) // anonymous read connection until the user logs in
     }
 
     fun onLoggedIn(info: SessionInfo) {
         session = info
         showLogin = false
         log("Session ready: uid=${info.uid} name=${info.name}")
-        ws.connect(uid = info.uid) // re-identify as the logged-in user
+        repo.connect(info.uid) // re-identify as the logged-in user (+ gap sync)
     }
 
     fun externalLog(line: String) = log(line)
 
-    /** Called right before the WebView fires the in-page fetch. */
     fun beginSend(text: String) {
         pendingText = text
         sendStatus = "Posting via WebView…"
@@ -85,7 +72,6 @@ class SpikeViewModel : ViewModel() {
         sendStatus = message
     }
 
-    /** Result JSON delivered by the in-page fetch (via the AndroidPost bridge). */
     fun onWebPostResult(json: String) {
         viewModelScope.launch(Dispatchers.Main.immediate) {
             val obj = runCatching { AppJson.parseToJsonElement(json).jsonObject }.getOrNull()
@@ -99,48 +85,18 @@ class SpikeViewModel : ViewModel() {
             }
             sendStatus = "Posted; confirming…"
             val confirmed = confirmLoop(session?.uid ?: 0, pendingText)
-            sendStatus = if (confirmed != null) {
-                mergeMessages(listOf(confirmed))
-                "Confirmed (id=${confirmed.id})"
-            } else {
-                "Posted; awaiting WS echo (not confirmed via REST)"
-            }
+            sendStatus = if (confirmed != null) "Confirmed (id=${confirmed.id})" else "Posted; awaiting WS echo"
         }
     }
 
-    /** Fallback confirm (WS new_messages usually wins first). */
+    /** Fallback confirm (WS new_messages usually wins first); repo upserts the result. */
     private suspend fun confirmLoop(uid: Long, content: String): MessageDto? {
         repeat(12) { attempt ->
             if (attempt > 0) delay((250L + attempt * 125).coerceAtMost(1000))
-            val res = runCatching { rest.confirm(uid, content) }.getOrNull()
-            if (res?.found == true && res.message != null) return res.message
+            val m = repo.confirm(uid, content)
+            if (m != null) return m
         }
         return null
-    }
-
-    private fun onWsEvent(event: WsEvent) {
-        viewModelScope.launch(Dispatchers.Main.immediate) {
-            when (event) {
-                is WsEvent.Status -> connected = event.connected
-                is WsEvent.OnlineCount -> onlineCount = event.count
-                is WsEvent.NewMessages -> mergeMessages(event.messages)
-                is WsEvent.Log -> log(event.line)
-            }
-        }
-    }
-
-    private fun mergeMessages(incoming: List<MessageDto>) {
-        var added = false
-        for (m in incoming) {
-            if (seenIds.add(m.id)) {
-                messages.add(m)
-                added = true
-            }
-        }
-        if (added) {
-            messages.sortBy { it.id }
-            while (messages.size > 200) messages.removeAt(0)
-        }
     }
 
     private fun log(line: String) {
@@ -149,7 +105,7 @@ class SpikeViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        ws.close()
+        repo.close()
         super.onCleared()
     }
 }
