@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -77,7 +77,7 @@ fun ChatScreen(
             AnimatedVisibility(visible = showDebug) {
                 DebugPanel(vm.logs, connected, onlineCount, vm.session)
             }
-            MessageList(messages, Modifier.weight(1f))
+            MessageList(messages, vm.session?.uid, Modifier.weight(1f))
         }
     }
 }
@@ -137,7 +137,7 @@ private fun StatusLine(connected: Boolean, onlineCount: Int) {
 }
 
 @Composable
-private fun MessageList(messages: List<MessageDto>, modifier: Modifier = Modifier) {
+private fun MessageList(messages: List<MessageDto>, ownUid: Long?, modifier: Modifier = Modifier) {
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
@@ -147,6 +147,21 @@ private fun MessageList(messages: List<MessageDto>, modifier: Modifier = Modifie
         modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(vertical = 6.dp),
     ) {
-        items(messages, key = { it.id }) { MessageRow(it) }
+        itemsIndexed(messages, key = { _, m -> m.id }) { i, m ->
+            val prev = messages.getOrNull(i - 1)
+            val next = messages.getOrNull(i + 1)
+            MessageRow(
+                m = m,
+                isOwn = ownUid != null && m.uid == ownUid,
+                firstInGroup = !groupable(prev, m),
+                lastInGroup = !groupable(m, next),
+            )
+        }
     }
+}
+
+/** Consecutive messages from the same author within 300s render as one bubble group. */
+private fun groupable(a: MessageDto?, b: MessageDto?): Boolean {
+    if (a == null || b == null) return false
+    return a.uid == b.uid && (b.timestamp - a.timestamp) in 0..300
 }
