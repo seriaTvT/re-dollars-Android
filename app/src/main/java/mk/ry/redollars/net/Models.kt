@@ -228,3 +228,19 @@ data class UserAvatarDto(
     val medium: String? = null,
     val small: String? = null,
 )
+
+/** GET /users/search — mention autocomplete. username is the login slug (often the
+ *  numeric uid for users who never set one); nickname is the display name. */
+@Serializable
+data class UserSearchResponse(
+    val status: Boolean = false,
+    val data: List<UserSearchDto> = emptyList(),
+)
+
+@Serializable
+data class UserSearchDto(
+    @Serializable(with = FlexLongSerializer::class) val id: Long = 0,
+    val username: String = "",
+    val nickname: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
+)

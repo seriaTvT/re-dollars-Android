@@ -25,22 +25,36 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import mk.ry.redollars.ui.render.Smilies
 
 /**
- * Tabbed smiley picker for reactions, ported from ReactionPickerFloating.tsx.
- * Tabs are the TV/BGM/VS/500 groups (each represented by its first smiley);
- * tapping any smiley emits its code.
+ * Tabbed smiley picker for reactions, ported from ReactionPickerFloating.tsx:
+ * [SmileyPicker] sized for the long-press dropdown.
  */
 @Composable
-fun ReactionPicker(onPick: (String) -> Unit, modifier: Modifier = Modifier) {
+fun ReactionPicker(onPick: (String) -> Unit, modifier: Modifier = Modifier) =
+    SmileyPicker(onPick, modifier.width(276.dp))
+
+/**
+ * Tabbed smiley picker over the TV/BGM/VS/500 groups (each tab represented by its
+ * first smiley); tapping any smiley emits its code. Also backs the composer's
+ * smiley panel (SmileyPanel.tsx), which sizes it full-width with adaptive columns.
+ */
+@Composable
+fun SmileyPicker(
+    onPick: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    columns: GridCells = GridCells.Fixed(7),
+    gridHeight: Dp = 216.dp,
+) {
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
     val group = Smilies.pickerGroups[tabIndex]
     val cs = MaterialTheme.colorScheme
 
-    Column(modifier.width(276.dp).padding(horizontal = 6.dp)) {
+    Column(modifier.padding(horizontal = 6.dp)) {
         Row(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
             Smilies.pickerGroups.forEachIndexed { i, g ->
                 val selected = i == tabIndex
@@ -73,14 +87,15 @@ fun ReactionPicker(onPick: (String) -> Unit, modifier: Modifier = Modifier) {
         }
 
         LazyVerticalGrid(
-            columns = GridCells.Fixed(7),
-            modifier = Modifier.fillMaxWidth().height(216.dp),
+            columns = columns,
+            modifier = Modifier.fillMaxWidth().height(gridHeight),
         ) {
             items(group.codes, key = { it }) { code ->
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(36.dp)
+                        .fillMaxWidth()
+                        .height(36.dp)
                         .clip(RoundedCornerShape(6.dp))
                         .clickable { onPick(code) },
                 ) {

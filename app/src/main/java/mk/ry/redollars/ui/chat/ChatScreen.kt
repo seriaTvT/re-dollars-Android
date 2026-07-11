@@ -90,14 +90,17 @@ fun ChatScreen(
         },
         bottomBar = {
             ChatComposer(
-                text = vm.composerText,
-                onTextChange = vm::onComposerChanged,
+                value = vm.composerValue,
+                onValueChange = vm::onComposerChanged,
                 enabled = vm.session != null,
                 status = vm.sendStatus,
                 replyTo = vm.replyTo,
                 onCancelReply = vm::cancelReply,
                 editing = vm.editing != null,
                 onCancelEdit = vm::cancelEdit,
+                mentionCandidates = vm.mentionCandidates,
+                onPickMention = vm::pickMention,
+                onInsertSmiley = vm::insertSmiley,
                 onSend = onSend,
                 onLogin = onOpenLogin,
             )
