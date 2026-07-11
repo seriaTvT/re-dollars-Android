@@ -15,6 +15,7 @@ import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -26,6 +27,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.viewmodel.compose.viewModel
 import mk.ry.redollars.spike.ui.chat.ChatScreen
+import mk.ry.redollars.spike.ui.chat.Lightbox
+import mk.ry.redollars.spike.ui.render.LocalImageViewer
 import mk.ry.redollars.spike.ui.theme.RedollarsTheme
 
 class MainActivity : ComponentActivity() {
@@ -47,49 +50,56 @@ private fun SpikeApp() {
                 onStopOrDispose { vm.setForeground(false) }
             }
             var webView by remember { mutableStateOf<WebView?>(null) }
+            var lightboxUrl by remember { mutableStateOf<String?>(null) }
 
-            Box(Modifier.fillMaxSize()) {
-                if (!vm.showLogin) {
-                    ChatScreen(
-                        vm = vm,
-                        onSend = { text ->
-                            val info = vm.session
-                            val wv = webView
-                            when {
-                                info == null -> vm.noteSend("Log in first")
-                                wv == null -> vm.noteSend("WebView not ready")
-                                else -> {
-                                    vm.beginSend(text)
-                                    wv.evaluateJavascript(buildPostJs(text), null)
+            CompositionLocalProvider(LocalImageViewer provides { url -> lightboxUrl = url }) {
+                Box(Modifier.fillMaxSize()) {
+                    if (!vm.showLogin) {
+                        ChatScreen(
+                            vm = vm,
+                            onSend = { text ->
+                                val info = vm.session
+                                val wv = webView
+                                when {
+                                    info == null -> vm.noteSend("Log in first")
+                                    wv == null -> vm.noteSend("WebView not ready")
+                                    else -> {
+                                        vm.beginSend(text)
+                                        wv.evaluateJavascript(buildPostJs(text), null)
+                                    }
                                 }
-                            }
-                        },
-                        onOpenLogin = { vm.showLogin = true },
+                            },
+                            onOpenLogin = { vm.showLogin = true },
+                        )
+                    }
+
+                    // Persistent Bangumi WebView: full-screen while logging in, kept alive
+                    // (1dp) afterwards so posts run same-origin from the real session.
+                    mk.ry.redollars.spike.ui.BangumiWebView(
+                        visible = vm.showLogin,
+                        onCreated = { webView = it },
+                        onResult = vm::onLoggedIn,
+                        onLog = vm::externalLog,
+                        onPostResult = vm::onWebPostResult,
+                        modifier = Modifier.align(Alignment.TopStart),
                     )
-                }
 
-                // Persistent Bangumi WebView: full-screen while logging in, kept alive
-                // (1dp) afterwards so posts run same-origin from the real session.
-                mk.ry.redollars.spike.ui.BangumiWebView(
-                    visible = vm.showLogin,
-                    onCreated = { webView = it },
-                    onResult = vm::onLoggedIn,
-                    onLog = vm::externalLog,
-                    onPostResult = vm::onWebPostResult,
-                    modifier = Modifier.align(Alignment.TopStart),
-                )
-
-                if (vm.showLogin) {
-                    FilledTonalIconButton(
-                        onClick = { vm.showLogin = false },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .statusBarsPadding()
-                            .padding(8.dp),
-                    ) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close login")
+                    if (vm.showLogin) {
+                        FilledTonalIconButton(
+                            onClick = { vm.showLogin = false },
+                            modifier = Modifier
+                                .align(Alignment.TopEnd)
+                                .statusBarsPadding()
+                                .padding(8.dp),
+                        ) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close login")
+                        }
                     }
                 }
+            }
+
+            lightboxUrl?.let { url ->
+                Lightbox(url = url, onDismiss = { lightboxUrl = null })
             }
         }
     }
