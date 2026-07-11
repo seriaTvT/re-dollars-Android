@@ -40,8 +40,12 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
-    /** GET /api/v1/messages?since_db_id=&limit= — messages newer than a db id (gap recovery). */
-    suspend fun fetchNewer(sinceDbId: Long, limit: Int = 200): List<MessageDto> = withContext(Dispatchers.IO) {
+    /**
+     * GET /api/v1/messages?since_db_id=&limit= — messages newer than a db id, in
+     * ascending id order (gap recovery). The server clamps limit to 100, so a deep
+     * backlog needs repeated calls advancing since_db_id.
+     */
+    suspend fun fetchNewer(sinceDbId: Long, limit: Int = 100): List<MessageDto> = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("${Config.BACKEND_API_URL}/messages?since_db_id=$sinceDbId&limit=$limit")
             .header("User-Agent", Config.USER_AGENT)
