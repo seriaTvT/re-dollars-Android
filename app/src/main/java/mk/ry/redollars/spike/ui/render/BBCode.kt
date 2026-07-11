@@ -1,6 +1,7 @@
 package mk.ry.redollars.spike.ui.render
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -242,6 +243,7 @@ private fun InlineText(text: String) {
 
 @Composable
 private fun ImageStack(urls: List<String>) {
+    val openViewer = LocalImageViewer.current
     Column(Modifier.padding(vertical = 4.dp)) {
         urls.forEach { url ->
             AsyncImage(
@@ -251,7 +253,8 @@ private fun ImageStack(urls: List<String>) {
                 modifier = Modifier
                     .padding(bottom = 4.dp)
                     .sizeIn(maxWidth = 240.dp, maxHeight = 280.dp)
-                    .clip(RoundedCornerShape(10.dp)),
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { openViewer(url) },
             )
         }
     }
