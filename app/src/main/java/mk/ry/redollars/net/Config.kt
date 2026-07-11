@@ -25,6 +25,13 @@ object Config {
         return "$BGM_HOST/oauth/authorize?client_id=$BGM_APP_ID&response_type=code&redirect_uri=$redirect"
     }
 
+    /** Standalone upload server (media.ts): images to /api/upload need the backend
+     *  Bearer JWT; other files to /api/upload/file need no auth. Files are served
+     *  from the lsky instance behind it. */
+    const val UPLOAD_BASE_URL = "https://up.ry.mk"
+    const val UPLOAD_API_URL = "$UPLOAD_BASE_URL/api/upload"
+    const val FILE_UPLOAD_API_URL = "$UPLOAD_API_URL/file"
+
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/0.2"
 

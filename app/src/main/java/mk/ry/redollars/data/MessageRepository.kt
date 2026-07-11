@@ -23,9 +23,14 @@ import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
+import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.RestApi
+import mk.ry.redollars.net.UploadApi
+import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserProfileDto
 import mk.ry.redollars.net.UserSearchDto
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
@@ -49,6 +54,7 @@ class MessageRepository @Inject constructor(
 ) {
     private val rest = RestApi(http)
     private val ws = DollarsWs(http, scope, ::onWsEvent)
+    private val uploads = UploadApi(http)
 
     /** How many of the newest cached rows the UI shows; grows as the user pages up. */
     private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
@@ -95,6 +101,47 @@ class MessageRepository @Inject constructor(
     /** Mention autocomplete: users whose nickname/username matches [query]. */
     suspend fun searchUsers(query: String): List<UserSearchDto> =
         runCatching { rest.searchUsers(query) }.getOrDefault(emptyList())
+
+    // ---- Sticker favorites (favorites.ts): image URLs, local cache + backend sync ----
+
+    private val favListSerializer = ListSerializer(String.serializer())
+
+    private val _favorites = MutableStateFlow(loadFavoritesCache())
+    val favorites: StateFlow<List<String>> = _favorites.asStateFlow()
+
+    private fun loadFavoritesCache(): List<String> =
+        prefs.getString(PREF_FAVORITES, null)
+            ?.let { runCatching { AppJson.decodeFromString(favListSerializer, it) }.getOrNull() }
+            ?: emptyList()
+
+    private fun persistFavorites(list: List<String>) {
+        _favorites.value = list
+        prefs.edit().putString(PREF_FAVORITES, AppJson.encodeToString(favListSerializer, list)).apply()
+    }
+
+    /** Union the backend's list with local additions (favorites.ts sync semantics). */
+    suspend fun syncFavorites() {
+        if (ownUid <= 0) return
+        val server = runCatching { rest.fetchFavorites(ownUid) }.getOrNull() ?: return
+        val merged = (server + _favorites.value).distinct()
+        if (merged != _favorites.value) persistFavorites(merged)
+    }
+
+    /** Local-first; the backend write is fire-and-forget like the web's. */
+    suspend fun addFavorite(url: String) {
+        if (url.isBlank() || url in _favorites.value) return
+        persistFavorites(listOf(url) + _favorites.value)
+        if (ownUid > 0) runCatching { rest.addFavorite(ownUid, url) }
+    }
+
+    suspend fun removeFavorite(url: String) {
+        persistFavorites(_favorites.value - url)
+        if (ownUid > 0) runCatching { rest.removeFavorite(ownUid, url) }
+    }
+
+    /** Upload an image to the upload server (requires the backend JWT). */
+    suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String): UploadResult =
+        uploads.uploadImage(bytes, fileName, mime, authToken)
 
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return
@@ -283,6 +330,7 @@ class MessageRepository @Inject constructor(
                 if (event.connected) scope.launch {
                     syncNewer()
                     refreshNotifications()
+                    syncFavorites()
                 }
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
@@ -358,5 +406,6 @@ class MessageRepository @Inject constructor(
         /** Backfill at most this many pages before jumping to the live tail instead. */
         const val MAX_CATCHUP_PAGES = 5
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
+        const val PREF_FAVORITES = "sticker_favorites"
     }
 }

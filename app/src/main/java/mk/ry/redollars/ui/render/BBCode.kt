@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -156,6 +157,22 @@ private fun smileyInline(src: String, large: Boolean): InlineTextContent {
     }
 }
 
+/** `[sticker]url[/sticker]` / `[emoji]url[/emoji]`: an arbitrary image rendered big
+ *  (web caps .custom-emoji at 150px); tapping opens the lightbox. */
+private val STICKER_TAG =
+    Regex("""\[(?:emoji|sticker)\](.+?)\[/(?:emoji|sticker)\]""", RegexOption.IGNORE_CASE)
+
+private fun stickerInline(src: String): InlineTextContent =
+    InlineTextContent(Placeholder(6.em, 6.em, PlaceholderVerticalAlign.TextCenter)) {
+        val openViewer = LocalImageViewer.current
+        AsyncImage(
+            model = src,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().clickable { openViewer(src) },
+        )
+    }
+
 private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineResult {
     val inline = LinkedHashMap<String, InlineTextContent>()
     val counter = intArrayOf(0)
@@ -185,14 +202,21 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
                 }
                 g[10] != null -> {
                     val raw = g[10]!!.value
+                    val stickerSrc = STICKER_TAG.find(raw)?.groupValues?.get(1)?.trim()
                     val smileySrc = Smilies.urlFor(raw)
-                    if (smileySrc != null) {
-                        val key = "sm${counter[0]++}"
-                        val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
-                        inline[key] = smileyInline(smileySrc, large)
-                        b.appendInlineContent(key, raw)
-                    } else {
-                        appendStyled(b, raw, styles) // bmo / custom emoji fallback
+                    when {
+                        stickerSrc != null && stickerSrc.startsWith("http") -> {
+                            val key = "sm${counter[0]++}"
+                            inline[key] = stickerInline(stickerSrc)
+                            b.appendInlineContent(key, raw)
+                        }
+                        smileySrc != null -> {
+                            val key = "sm${counter[0]++}"
+                            val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
+                            inline[key] = smileyInline(smileySrc, large)
+                            b.appendInlineContent(key, raw)
+                        }
+                        else -> appendStyled(b, raw, styles) // bmo fallback (no renderer yet)
                     }
                 }
                 g[11] != null -> b.withLink(LinkAnnotation.Url(g[11]!!.value)) {
