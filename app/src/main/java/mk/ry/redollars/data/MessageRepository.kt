@@ -1,5 +1,6 @@
 package mk.ry.redollars.data
 
+import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -41,6 +42,7 @@ import javax.inject.Singleton
 class MessageRepository @Inject constructor(
     private val dao: MessageDao,
     http: OkHttpClient,
+    private val prefs: SharedPreferences,
     @ApplicationScope private val scope: CoroutineScope,
 ) {
     private val rest = RestApi(http)
@@ -104,6 +106,48 @@ class MessageRepository @Inject constructor(
         if (ownUid <= 0) return
         _notifications.value = emptyList()
         runCatching { rest.markAllNotificationsRead(ownUid) }
+    }
+
+    // ---- Backend auth token (long-lived Bearer; unlocks edit/delete) ----
+
+    private var authToken: String? = prefs.getString(PREF_AUTH_TOKEN, null)
+
+    fun setAuthToken(token: String?) {
+        authToken = token
+        prefs.edit().putString(PREF_AUTH_TOKEN, token).apply()
+    }
+
+    /** True when the stored token is valid on the backend AND belongs to [expectUid].
+     *  An invalid/mismatched token is dropped so we re-run OAuth next login. */
+    suspend fun validateAuthToken(expectUid: Long): Boolean {
+        val token = authToken ?: return false
+        val user = runCatching { rest.authMe(token) }.getOrNull()
+        if (user != null && user.id == expectUid) return true
+        // Distinguish "backend said no" from network failure: only drop on a real no.
+        if (user != null) setAuthToken(null)
+        return false
+    }
+
+    /** Edit own message; Room is patched immediately, the WS echo re-enriches it. */
+    suspend fun editMessage(id: Long, content: String): Boolean {
+        val token = authToken ?: return false
+        val ok = runCatching { rest.editMessage(id, content, token) }.getOrDefault(false)
+        if (ok) {
+            dao.getById(id)?.let { row ->
+                dao.upsertAll(listOf(row.copy(message = content)))
+            }
+        } else {
+            log("Edit failed (msg=$id)")
+        }
+        return ok
+    }
+
+    /** Delete own message; marked locally at once, the WS broadcast confirms. */
+    suspend fun deleteMessage(id: Long): Boolean {
+        val token = authToken ?: return false
+        val ok = runCatching { rest.deleteMessage(id, token) }.getOrDefault(false)
+        if (ok) dao.markDeleted(id) else log("Delete failed (msg=$id)")
+        return ok
     }
 
     /** Foreground/background from the UI lifecycle: pause the socket heartbeat and, on
@@ -249,5 +293,6 @@ class MessageRepository @Inject constructor(
     private companion object {
         const val INITIAL_WINDOW = 300
         const val PAGE_SIZE = 60
+        const val PREF_AUTH_TOKEN = "dollars_auth_token"
     }
 }

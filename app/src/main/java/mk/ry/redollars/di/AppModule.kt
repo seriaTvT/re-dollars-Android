@@ -38,6 +38,11 @@ object AppModule {
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase = AppDatabase.get(context)
 
     @Provides
+    @Singleton
+    fun providePreferences(@ApplicationContext context: Context): android.content.SharedPreferences =
+        context.getSharedPreferences("redollars", Context.MODE_PRIVATE)
+
+    @Provides
     fun provideMessageDao(db: AppDatabase): MessageDao = db.messageDao()
 
     @Provides

@@ -52,7 +52,17 @@ class ChatViewModel @Inject constructor(
     var pendingJumpId by mutableStateOf<Long?>(null)
     /** Message being replied to; the send path prefixes `[quote=id][/quote]`. */
     var replyTo by mutableStateOf<MessageDto?>(null); private set
+    /** Composer text, hoisted so edit mode can prefill it. */
+    var composerText by mutableStateOf("")
+    /** Message being edited (id + any hidden leading quote to restore on save). */
+    var editing by mutableStateOf<EditingState?>(null); private set
+    /** True once the backend Bearer token is validated for this session's uid. */
+    var authReady by mutableStateOf(false); private set
+    /** Non-null asks the host to load the OAuth authorize URL in the login WebView. */
+    var oauthRequestUrl by mutableStateOf<String?>(null); private set
     val logs: SnapshotStateList<String> = mutableStateListOf()
+
+    data class EditingState(val id: Long, val hiddenQuote: String?)
 
     private var started = false
     private var pendingText = ""
@@ -69,7 +79,6 @@ class ChatViewModel @Inject constructor(
 
     fun onLoggedIn(info: SessionInfo) {
         session = info
-        showLogin = false
         viewModelScope.launch {
             // The page-extracted name is the login slug (or a uid fallback), NOT the
             // display nickname — resolve the real one from the backend profile cache
@@ -82,7 +91,36 @@ class ChatViewModel @Inject constructor(
             log("Session ready: uid=${info.uid} nickname=$nickname (profile=${profile != null})")
             // Re-identify + join (share presence) so our typing/presence is attributed.
             repo.connect(info.uid, nickname, avatar)
+
+            // Backend token: reuse a stored one when it belongs to this uid; otherwise
+            // drive the OAuth authorize flow in the still-visible login WebView (its
+            // callback sets a dollars_auth cookie we can harvest).
+            if (repo.validateAuthToken(info.uid)) {
+                authReady = true
+                showLogin = false
+                log("Backend auth ready (stored token)")
+            } else {
+                oauthRequestUrl = mk.ry.redollars.net.Config.oauthAuthorizeUrl()
+                log("Requesting backend OAuth authorization…")
+            }
         }
+    }
+
+    /** Token harvested from the OAuth callback cookie by the WebView. */
+    fun onAuthToken(token: String) {
+        oauthRequestUrl = null
+        viewModelScope.launch {
+            repo.setAuthToken(token)
+            authReady = repo.validateAuthToken(session?.uid ?: 0)
+            showLogin = false
+            log("Backend auth ${if (authReady) "ready (new token)" else "validation FAILED"}")
+        }
+    }
+
+    /** User closed the login overlay; abandon any in-flight OAuth request. */
+    fun dismissLogin() {
+        showLogin = false
+        oauthRequestUrl = null
     }
 
     // ---- Composer typing signals: start immediately, stop after 2.5s idle or on send. ----
@@ -90,6 +128,7 @@ class ChatViewModel @Inject constructor(
     private var typingActive = false
 
     fun onComposerChanged(text: String) {
+        composerText = text
         if (session == null) return
         if (text.isBlank()) {
             stopTyping()
@@ -154,11 +193,48 @@ class ChatViewModel @Inject constructor(
     fun externalLog(line: String) = log(line)
 
     fun startReply(m: MessageDto) {
+        editing = null
         replyTo = m
     }
 
     fun cancelReply() {
         replyTo = null
+    }
+
+    // ---- Edit / delete own messages (needs the backend token) ----
+
+    private val leadingQuote = Regex("""^\[quote=\d+\]\[/quote\]""")
+
+    fun startEdit(m: MessageDto) {
+        replyTo = null
+        val hidden = leadingQuote.find(m.message)?.value
+        editing = EditingState(m.id, hidden)
+        composerText = if (hidden != null) m.message.removePrefix(hidden) else m.message
+    }
+
+    fun cancelEdit() {
+        editing = null
+        composerText = ""
+    }
+
+    fun submitEdit(text: String) {
+        val edit = editing ?: return
+        viewModelScope.launch {
+            sendStatus = "Saving edit…"
+            val body = (edit.hiddenQuote ?: "") + text
+            val ok = repo.editMessage(edit.id, body)
+            sendStatus = if (ok) "Edited (id=${edit.id})" else "Edit failed"
+            if (ok) {
+                editing = null
+                composerText = ""
+            }
+        }
+    }
+
+    fun deleteMessage(id: Long) {
+        viewModelScope.launch {
+            sendStatus = if (repo.deleteMessage(id)) "Deleted (id=$id)" else "Delete failed"
+        }
     }
 
     /**
@@ -169,6 +245,7 @@ class ChatViewModel @Inject constructor(
         stopTyping()
         val body = replyTo?.let { "[quote=${it.id}][/quote]$text" } ?: text
         replyTo = null
+        composerText = ""
         pendingText = body
         sendStatus = "Posting via WebView…"
         return body

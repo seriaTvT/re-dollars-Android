@@ -66,6 +66,7 @@ fun BangumiWebView(
     onResult: (SessionInfo) -> Unit,
     onLog: (String) -> Unit,
     onPostResult: (String) -> Unit,
+    onAuthToken: (String) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
@@ -84,6 +85,26 @@ fun BangumiWebView(
                     private var done = false
 
                     override fun onPageFinished(view: WebView, url: String?) {
+                        // OAuth callback landed: the backend set a dollars_auth cookie
+                        // on its own domain — harvest it (CookieManager sees httpOnly).
+                        if (url != null && url.startsWith(Config.OAUTH_CALLBACK_URL)) {
+                            CookieManager.getInstance().flush()
+                            val token = CookieManager.getInstance()
+                                .getCookie(Config.BACKEND_URL)
+                                ?.split(';')
+                                ?.map { it.trim() }
+                                ?.firstOrNull { it.startsWith("dollars_auth=") }
+                                ?.substringAfter('=')
+                                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                            if (!token.isNullOrBlank()) {
+                                onLog("OAuth callback: token captured")
+                                onAuthToken(token)
+                            } else {
+                                onLog("OAuth callback: no dollars_auth cookie found")
+                            }
+                            return
+                        }
+
                         if (done) return
                         view.evaluateJavascript(EXTRACT_JS) { raw ->
                             val parsed = parseSession(raw) ?: return@evaluateJavascript

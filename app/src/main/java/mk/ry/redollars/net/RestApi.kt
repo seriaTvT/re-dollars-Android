@@ -54,6 +54,45 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /** GET /api/v1/auth/me — validate a backend Bearer token, returning its user. */
+    suspend fun authMe(token: String): AuthUserDto? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/auth/me")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext null
+            runCatching { AppJson.decodeFromString<AuthMeResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.user
+        }
+    }
+
+    /** PUT /api/v1/messages/:id {content} — edit own message (requires Bearer token). */
+    suspend fun editMessage(id: Long, content: String, token: String): Boolean = withContext(Dispatchers.IO) {
+        val payload = AppJson.encodeToString(EditRequest.serializer(), EditRequest(content))
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/messages/$id")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Authorization", "Bearer $token")
+            .put(payload.toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
+
+    /** DELETE /api/v1/messages/:id — delete own message (requires Bearer token). */
+    suspend fun deleteMessage(id: Long, token: String): Boolean = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/messages/$id")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Authorization", "Bearer $token")
+            .delete()
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
+
     /** GET /api/v1/notifications?uid= — unread mention/reply notifications, newest first. */
     suspend fun fetchNotifications(uid: Long): List<NotificationItem> = withContext(Dispatchers.IO) {
         val req = Request.Builder()
@@ -165,6 +204,9 @@ class RestApi(private val client: OkHttpClient) {
 
 @kotlinx.serialization.Serializable
 private data class ConfirmRequest(val uid: Long, val message: String)
+
+@kotlinx.serialization.Serializable
+private data class EditRequest(val content: String)
 
 @kotlinx.serialization.Serializable
 private data class ReactionToggleRequest(

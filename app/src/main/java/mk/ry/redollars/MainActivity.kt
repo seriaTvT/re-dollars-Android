@@ -54,6 +54,12 @@ private fun RedollarsApp() {
             var webView by remember { mutableStateOf<WebView?>(null) }
             var lightboxUrl by remember { mutableStateOf<String?>(null) }
 
+            // The VM requests the OAuth authorize flow after login when no valid
+            // backend token is stored; drive it in the (still visible) login WebView.
+            LaunchedEffect(vm.oauthRequestUrl) {
+                vm.oauthRequestUrl?.let { webView?.loadUrl(it) }
+            }
+
             CompositionLocalProvider(LocalImageViewer provides { url -> lightboxUrl = url }) {
                 Box(Modifier.fillMaxSize()) {
                     if (!vm.showLogin) {
@@ -63,6 +69,7 @@ private fun RedollarsApp() {
                                 val info = vm.session
                                 val wv = webView
                                 when {
+                                    vm.editing != null -> vm.submitEdit(text)
                                     info == null -> vm.noteSend("Log in first")
                                     wv == null -> vm.noteSend("WebView not ready")
                                     else -> {
@@ -83,12 +90,13 @@ private fun RedollarsApp() {
                         onResult = vm::onLoggedIn,
                         onLog = vm::externalLog,
                         onPostResult = vm::onWebPostResult,
+                        onAuthToken = vm::onAuthToken,
                         modifier = Modifier.align(Alignment.TopStart),
                     )
 
                     if (vm.showLogin) {
                         FilledTonalIconButton(
-                            onClick = { vm.showLogin = false },
+                            onClick = vm::dismissLogin,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
                                 .statusBarsPadding()
