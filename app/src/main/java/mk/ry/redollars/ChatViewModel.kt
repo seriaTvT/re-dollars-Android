@@ -50,6 +50,8 @@ class ChatViewModel @Inject constructor(
     var historyExhausted by mutableStateOf(false); private set
     /** Message id the list should scroll to (set when opening a notification). */
     var pendingJumpId by mutableStateOf<Long?>(null)
+    /** Message being replied to; the send path prefixes `[quote=id][/quote]`. */
+    var replyTo by mutableStateOf<MessageDto?>(null); private set
     val logs: SnapshotStateList<String> = mutableStateListOf()
 
     private var started = false
@@ -151,10 +153,25 @@ class ChatViewModel @Inject constructor(
 
     fun externalLog(line: String) = log(line)
 
-    fun beginSend(text: String) {
+    fun startReply(m: MessageDto) {
+        replyTo = m
+    }
+
+    fun cancelReply() {
+        replyTo = null
+    }
+
+    /**
+     * Called right before the WebView fires the in-page fetch. Returns the full
+     * outgoing body: replies are `[quote=<id>][/quote]<text>` (sendMessage.ts parity).
+     */
+    fun beginSend(text: String): String {
         stopTyping()
-        pendingText = text
+        val body = replyTo?.let { "[quote=${it.id}][/quote]$text" } ?: text
+        replyTo = null
+        pendingText = body
         sendStatus = "Posting via WebView…"
+        return body
     }
 
     fun noteSend(message: String) {
