@@ -34,6 +34,7 @@ fun ChatComposer(
     status: String?,
     onSend: (String) -> Unit,
     onLogin: () -> Unit,
+    onTyping: (String) -> Unit = {},
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding()) {
@@ -62,7 +63,10 @@ fun ChatComposer(
                 ) {
                     OutlinedTextField(
                         value = text,
-                        onValueChange = { text = it },
+                        onValueChange = {
+                            text = it
+                            onTyping(it)
+                        },
                         modifier = Modifier.weight(1f),
                         placeholder = { Text("Message…") },
                         maxLines = 5,

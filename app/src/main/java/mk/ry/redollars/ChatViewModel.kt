@@ -9,6 +9,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +23,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import mk.ry.redollars.data.MessageRepository
 import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.WsUser
 import javax.inject.Inject
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
@@ -36,6 +38,7 @@ class ChatViewModel @Inject constructor(
         repo.messages.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val connected: StateFlow<Boolean> = repo.connected
     val onlineCount: StateFlow<Int> = repo.onlineCount
+    val typingUsers: StateFlow<List<WsUser>> = repo.typingUsers
 
     // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
@@ -62,7 +65,38 @@ class ChatViewModel @Inject constructor(
         session = info
         showLogin = false
         log("Session ready: uid=${info.uid} name=${info.name}")
-        repo.connect(info.uid) // re-identify as the logged-in user (+ gap sync)
+        // Re-identify + join (share presence) so our typing/presence is attributed.
+        repo.connect(info.uid, info.name)
+    }
+
+    // ---- Composer typing signals: start immediately, stop after 2.5s idle or on send. ----
+    private var typingStopJob: Job? = null
+    private var typingActive = false
+
+    fun onComposerChanged(text: String) {
+        if (session == null) return
+        if (text.isBlank()) {
+            stopTyping()
+            return
+        }
+        if (!typingActive) {
+            typingActive = true
+            repo.sendTyping(true)
+        }
+        typingStopJob?.cancel()
+        typingStopJob = viewModelScope.launch {
+            delay(2_500)
+            stopTyping()
+        }
+    }
+
+    private fun stopTyping() {
+        typingStopJob?.cancel()
+        typingStopJob = null
+        if (typingActive) {
+            typingActive = false
+            repo.sendTyping(false)
+        }
     }
 
     /** Page one more window of history above the oldest displayed message. */
@@ -85,6 +119,7 @@ class ChatViewModel @Inject constructor(
     fun externalLog(line: String) = log(line)
 
     fun beginSend(text: String) {
+        stopTyping()
         pendingText = text
         sendStatus = "Posting via WebView…"
     }

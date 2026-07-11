@@ -68,6 +68,7 @@ fun ChatScreen(
     val connected by vm.connected.collectAsState()
     val onlineCount by vm.onlineCount.collectAsState()
     val messages by vm.messages.collectAsState()
+    val typingUsers by vm.typingUsers.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
@@ -86,6 +87,7 @@ fun ChatScreen(
                 status = vm.sendStatus,
                 onSend = onSend,
                 onLogin = onOpenLogin,
+                onTyping = vm::onComposerChanged,
             )
         },
     ) { inner ->
@@ -100,6 +102,7 @@ fun ChatScreen(
                 onLoadOlder = vm::loadOlder,
                 modifier = Modifier.weight(1f),
             )
+            TypingIndicator(typingUsers)
         }
     }
 }
