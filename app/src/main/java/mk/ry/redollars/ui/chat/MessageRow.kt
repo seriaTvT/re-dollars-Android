@@ -18,6 +18,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -33,7 +35,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +75,8 @@ fun MessageRow(
     lastInGroup: Boolean,
     ownUid: Long? = null,
     onReact: (String) -> Unit = {},
+    onReply: () -> Unit = {},
+    onJumpTo: (Long) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val cs = MaterialTheme.colorScheme
@@ -134,8 +140,18 @@ fun MessageRow(
                                 fontStyle = FontStyle.Italic,
                             )
                         } else {
-                            m.replyDetails?.let {
-                                ReplyHeader(it, Modifier.fillMaxWidth().padding(bottom = 4.dp))
+                            m.replyDetails?.let { reply ->
+                                ReplyHeader(
+                                    reply,
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 4.dp)
+                                        .then(
+                                            m.replyToId?.let { target ->
+                                                Modifier.clickable { onJumpTo(target) }
+                                            } ?: Modifier,
+                                        ),
+                                )
                             }
                             BBCodeMessage(m.message)
                         }
@@ -176,6 +192,22 @@ fun MessageRow(
                                 )
                             }
                         }
+                        HorizontalDivider(Modifier.padding(horizontal = 8.dp, vertical = 2.dp))
+                        DropdownMenuItem(
+                            text = { Text("Reply") },
+                            onClick = {
+                                showQuickReact = false
+                                onReply()
+                            },
+                        )
+                        val clipboard = LocalClipboardManager.current
+                        DropdownMenuItem(
+                            text = { Text("Copy") },
+                            onClick = {
+                                showQuickReact = false
+                                clipboard.setText(AnnotatedString(m.message))
+                            },
+                        )
                     } else {
                         ReactionPicker(
                             onPick = { code ->

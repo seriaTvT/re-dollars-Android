@@ -92,6 +92,8 @@ fun ChatScreen(
             ChatComposer(
                 enabled = vm.session != null,
                 status = vm.sendStatus,
+                replyTo = vm.replyTo,
+                onCancelReply = vm::cancelReply,
                 onSend = onSend,
                 onLogin = onOpenLogin,
                 onTyping = vm::onComposerChanged,
@@ -108,6 +110,8 @@ fun ChatScreen(
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
                 onReact = vm::toggleReaction,
+                onReply = vm::startReply,
+                onJumpTo = { vm.pendingJumpId = it },
                 jumpToId = vm.pendingJumpId,
                 onJumpHandled = { vm.pendingJumpId = null },
                 modifier = Modifier.weight(1f),
@@ -203,6 +207,8 @@ private fun MessageList(
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
     onReact: (Long, String) -> Unit,
+    onReply: (MessageDto) -> Unit,
+    onJumpTo: (Long) -> Unit,
     jumpToId: Long?,
     onJumpHandled: () -> Unit,
     modifier: Modifier = Modifier,
@@ -294,6 +300,8 @@ private fun MessageList(
                     lastInGroup = !groupable(m, next),
                     ownUid = ownUid,
                     onReact = { emoji -> onReact(m.id, emoji) },
+                    onReply = { onReply(m) },
+                    onJumpTo = onJumpTo,
                 )
             }
         }

@@ -21,6 +21,8 @@ data class MessageEntity(
     val color: String?,
     val type: String,
     val isDeleted: Boolean,
+    /** Local db id of the message this one replies to, if any. */
+    val replyToId: Long?,
     /** ReplyDetails serialized to JSON, or null. Kept as a blob to avoid a join. */
     val replyJson: String?,
     /** List<ReactionDto> serialized to JSON, or null when empty. */
@@ -37,6 +39,7 @@ fun MessageDto.toEntity() = MessageEntity(
     color = color,
     type = type,
     isDeleted = isDeleted,
+    replyToId = replyToId,
     replyJson = replyDetails?.let { AppJson.encodeToString(ReplyDetails.serializer(), it) },
     reactionsJson = reactions.takeIf { it.isNotEmpty() }
         ?.let { AppJson.encodeToString(reactionsSerializer, it) },
@@ -52,6 +55,7 @@ fun MessageEntity.toDto() = MessageDto(
     color = color,
     type = type,
     isDeleted = isDeleted,
+    replyToId = replyToId,
     replyDetails = replyJson?.let {
         runCatching { AppJson.decodeFromString(ReplyDetails.serializer(), it) }.getOrNull()
     },

@@ -66,8 +66,8 @@ private fun RedollarsApp() {
                                     info == null -> vm.noteSend("Log in first")
                                     wv == null -> vm.noteSend("WebView not ready")
                                     else -> {
-                                        vm.beginSend(text)
-                                        wv.evaluateJavascript(buildPostJs(text), null)
+                                        val body = vm.beginSend(text)
+                                        wv.evaluateJavascript(buildPostJs(body), null)
                                     }
                                 }
                             },

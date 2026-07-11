@@ -9,6 +9,7 @@ import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.SerialName
 
@@ -27,6 +28,23 @@ object FlexLongSerializer : KSerializer<Long> {
     }
 
     override fun serialize(encoder: Encoder, value: Long) = encoder.encodeLong(value)
+}
+
+/** Nullable variant of [FlexLongSerializer] for optional BIGINT columns (reply_to_id). */
+object FlexLongOrNullSerializer : KSerializer<Long?> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("FlexLongOrNull", PrimitiveKind.LONG)
+
+    override fun deserialize(decoder: Decoder): Long? {
+        val jsonDecoder = decoder as? JsonDecoder ?: return decoder.decodeLong()
+        val element = jsonDecoder.decodeJsonElement()
+        val primitive = element as? JsonPrimitive ?: return null
+        return primitive.content.trim().toLongOrNull()
+    }
+
+    override fun serialize(encoder: Encoder, value: Long?) {
+        if (value != null) encoder.encodeLong(value)
+    }
 }
 
 val AppJson: Json = Json {
@@ -51,6 +69,9 @@ data class MessageDto(
     val color: String? = null,
     val type: String = "text",
     @SerialName("is_deleted") val isDeleted: Boolean = false,
+    @SerialName("reply_to_id")
+    @Serializable(with = FlexLongOrNullSerializer::class)
+    val replyToId: Long? = null,
     @SerialName("reply_details") val replyDetails: ReplyDetails? = null,
     val reactions: List<ReactionDto> = emptyList(),
 )
