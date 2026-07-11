@@ -33,6 +33,7 @@ sealed interface WsEvent {
     data class ReactionRemove(val messageId: Long, val userId: Long, val emoji: String) : WsEvent
     data class MessageDeleted(val messageId: Long) : WsEvent
     data class MessageEdited(val message: MessageDto) : WsEvent
+    data class Notification(val item: NotificationItem) : WsEvent
     data class Log(val line: String) : WsEvent
 }
 
@@ -200,6 +201,15 @@ class DollarsWs(
                     val userId = payload["user_id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return
                     val emoji = payload["emoji"]?.jsonPrimitive?.contentOrNull ?: return
                     onEvent(WsEvent.ReactionRemove(messageId, userId, emoji))
+                }
+
+                "notification" -> {
+                    // Server sends this only to our identified uid (sendToUser).
+                    val payload = obj["payload"] ?: return
+                    val dto = runCatching {
+                        AppJson.decodeFromJsonElement(NotificationWsDto.serializer(), payload)
+                    }.getOrNull() ?: return
+                    onEvent(WsEvent.Notification(dto.toItem()))
                 }
 
                 "message_delete" -> {

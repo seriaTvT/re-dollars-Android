@@ -19,6 +19,7 @@ import mk.ry.redollars.di.ApplicationScope
 import kotlinx.coroutines.Job
 import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.UserProfileDto
@@ -66,6 +67,10 @@ class MessageRepository @Inject constructor(
     private val _typingUsers = MutableStateFlow<List<WsUser>>(emptyList())
     val typingUsers: StateFlow<List<WsUser>> = _typingUsers.asStateFlow()
 
+    /** Unread mention/reply notifications, newest first (server keeps only unread). */
+    private val _notifications = MutableStateFlow<List<NotificationItem>>(emptyList())
+    val notifications: StateFlow<List<NotificationItem>> = _notifications.asStateFlow()
+
     private val typingClearJobs = HashMap<Long, Job>()
     private var ownUid = 0L
 
@@ -82,6 +87,24 @@ class MessageRepository @Inject constructor(
     /** Resolve a uid's cached profile (true nickname + avatar) from the backend. */
     suspend fun fetchUserProfile(uid: Long): UserProfileDto? =
         runCatching { rest.getUser(uid) }.getOrNull()
+
+    suspend fun refreshNotifications() {
+        if (ownUid <= 0) return
+        val list = runCatching { rest.fetchNotifications(ownUid) }.getOrDefault(emptyList())
+        _notifications.value = list
+    }
+
+    suspend fun markNotificationRead(id: Long) {
+        if (ownUid <= 0) return
+        _notifications.value = _notifications.value.filterNot { it.id == id }
+        runCatching { rest.markNotificationRead(id, ownUid) }
+    }
+
+    suspend fun markAllNotificationsRead() {
+        if (ownUid <= 0) return
+        _notifications.value = emptyList()
+        runCatching { rest.markAllNotificationsRead(ownUid) }
+    }
 
     /** Foreground/background from the UI lifecycle: pause the socket heartbeat and, on
      *  return, resume/reconnect and catch up on anything missed while away. */
@@ -153,7 +176,10 @@ class MessageRepository @Inject constructor(
             is WsEvent.Status -> {
                 _connected.value = event.connected
                 // Every (re)connect catches up via since_db_id; WS delivery is best-effort.
-                if (event.connected) scope.launch { syncNewer() }
+                if (event.connected) scope.launch {
+                    syncNewer()
+                    refreshNotifications()
+                }
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
             is WsEvent.NewMessages -> {
@@ -173,6 +199,10 @@ class MessageRepository @Inject constructor(
                 patchReactions(event.messageId) { list ->
                     list.filterNot { it.userId == event.userId && it.emoji == event.emoji }
                 }
+            }
+            is WsEvent.Notification -> {
+                _notifications.value =
+                    listOf(event.item) + _notifications.value.filterNot { it.id == event.item.id }
             }
             is WsEvent.MessageDeleted -> scope.launch { dao.markDeleted(event.messageId) }
             is WsEvent.MessageEdited -> scope.launch {

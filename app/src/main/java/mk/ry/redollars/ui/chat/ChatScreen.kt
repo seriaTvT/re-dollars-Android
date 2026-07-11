@@ -22,6 +22,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -69,15 +72,19 @@ fun ChatScreen(
     val onlineCount by vm.onlineCount.collectAsState()
     val messages by vm.messages.collectAsState()
     val typingUsers by vm.typingUsers.collectAsState()
+    val notifications by vm.notifications.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
+    var showNotifications by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             ChatTopBar(
                 connected = connected,
                 onlineCount = onlineCount,
+                notificationCount = notifications.size,
                 debugOn = showDebug,
                 onToggleDebug = { showDebug = !showDebug },
+                onNotifications = { showNotifications = true },
                 onAccount = onOpenLogin,
             )
         },
@@ -101,10 +108,24 @@ fun ChatScreen(
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
                 onReact = vm::toggleReaction,
+                jumpToId = vm.pendingJumpId,
+                onJumpHandled = { vm.pendingJumpId = null },
                 modifier = Modifier.weight(1f),
             )
             TypingIndicator(typingUsers)
         }
+    }
+
+    if (showNotifications) {
+        NotificationsSheet(
+            notifications = notifications,
+            onOpen = { item ->
+                showNotifications = false
+                vm.openNotification(item)
+            },
+            onMarkAllRead = vm::markAllNotificationsRead,
+            onDismiss = { showNotifications = false },
+        )
     }
 }
 
@@ -113,8 +134,10 @@ fun ChatScreen(
 private fun ChatTopBar(
     connected: Boolean,
     onlineCount: Int,
+    notificationCount: Int,
     debugOn: Boolean,
     onToggleDebug: () -> Unit,
+    onNotifications: () -> Unit,
     onAccount: () -> Unit,
 ) {
     TopAppBar(
@@ -129,6 +152,17 @@ private fun ChatTopBar(
             }
         },
         actions = {
+            IconButton(onClick = onNotifications) {
+                BadgedBox(
+                    badge = {
+                        if (notificationCount > 0) {
+                            Badge { Text(if (notificationCount > 99) "99+" else "$notificationCount") }
+                        }
+                    },
+                ) {
+                    Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
+                }
+            }
             IconButton(onClick = onToggleDebug) {
                 Icon(
                     Icons.Filled.Info,
@@ -169,6 +203,8 @@ private fun MessageList(
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
     onReact: (Long, String) -> Unit,
+    jumpToId: Long?,
+    onJumpHandled: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -206,6 +242,24 @@ private fun MessageList(
 
     // Reaching the bottom (manually or via the pill) clears the unread badge.
     LaunchedEffect(atBottom) { if (atBottom) newCount = 0 }
+
+    // Jump to a notification's message when it's in the loaded window (the spinner
+    // header shifts list indices by one while visible).
+    LaunchedEffect(jumpToId, messages) {
+        val target = jumpToId ?: return@LaunchedEffect
+        val index = messages.indexOfFirst { it.id == target }
+        val oldestLoaded = messages.firstOrNull()?.id ?: Long.MAX_VALUE
+        when {
+            index >= 0 -> {
+                listState.animateScrollToItem(index + if (loadingOlder) 1 else 0)
+                onJumpHandled()
+            }
+            // Older than the loaded window: page back and re-run when messages change.
+            messages.isNotEmpty() && target < oldestLoaded -> onLoadOlder()
+            // Should be in range but missing (e.g. deleted): give up quietly.
+            messages.isNotEmpty() -> onJumpHandled()
+        }
+    }
 
     // Nearing the top pages in older history (VM guards re-entrancy/exhaustion).
     LaunchedEffect(listState) {
