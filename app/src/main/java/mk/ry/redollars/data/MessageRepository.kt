@@ -21,6 +21,7 @@ import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.RestApi
+import mk.ry.redollars.net.UserProfileDto
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
@@ -77,6 +78,10 @@ class MessageRepository @Inject constructor(
 
     /** Broadcast our composer typing state. */
     fun sendTyping(typing: Boolean) = ws.sendTyping(typing)
+
+    /** Resolve a uid's cached profile (true nickname + avatar) from the backend. */
+    suspend fun fetchUserProfile(uid: Long): UserProfileDto? =
+        runCatching { rest.getUser(uid) }.getOrNull()
 
     /** Foreground/background from the UI lifecycle: pause the socket heartbeat and, on
      *  return, resume/reconnect and catch up on anything missed while away. */
