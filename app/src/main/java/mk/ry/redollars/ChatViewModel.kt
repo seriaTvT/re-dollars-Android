@@ -99,6 +99,15 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** Toggle a reaction as the logged-in user (tap a chip or pick from long-press). */
+    fun toggleReaction(messageId: Long, emoji: String) {
+        val info = session ?: run {
+            sendStatus = "Log in to react"
+            return
+        }
+        viewModelScope.launch { repo.toggleReaction(messageId, info.uid, info.name, emoji) }
+    }
+
     /** Page one more window of history above the oldest displayed message. */
     fun loadOlder() {
         if (loadingOlder || historyExhausted) return

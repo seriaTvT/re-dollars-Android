@@ -91,3 +91,11 @@ data class ConfirmResponse(
     val found: Boolean = false,
     val message: MessageDto? = null,
 )
+
+/** POST /messages/:id/reactions result. action: added | removed | replaced. */
+@Serializable
+data class ReactionToggleResponse(
+    val status: Boolean = false,
+    val action: String = "",
+    val data: ReactionDto? = null,
+)

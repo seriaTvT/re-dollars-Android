@@ -29,7 +29,12 @@ private data class ReactionGroup(val emoji: String, val count: Int, val mine: Bo
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun ReactionChips(reactions: List<ReactionDto>, ownUid: Long?, modifier: Modifier = Modifier) {
+fun ReactionChips(
+    reactions: List<ReactionDto>,
+    ownUid: Long?,
+    onToggle: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     if (reactions.isEmpty()) return
     val groups = remember(reactions, ownUid) {
         reactions.groupBy { it.emoji }.map { (emoji, list) ->
@@ -38,18 +43,19 @@ fun ReactionChips(reactions: List<ReactionDto>, ownUid: Long?, modifier: Modifie
     }
     FlowRow(modifier.padding(top = 2.dp)) {
         groups.forEach { group ->
-            ReactionChip(group)
+            ReactionChip(group) { onToggle(group.emoji) }
         }
     }
 }
 
 @Composable
-private fun ReactionChip(group: ReactionGroup) {
+private fun ReactionChip(group: ReactionGroup, onClick: () -> Unit) {
     val cs = MaterialTheme.colorScheme
     Surface(
         color = if (group.mine) cs.primaryContainer else cs.surfaceContainerHigh,
         contentColor = if (group.mine) cs.onPrimaryContainer else cs.onSurfaceVariant,
         shape = RoundedCornerShape(10.dp),
+        onClick = onClick,
         modifier = Modifier.padding(end = 4.dp, bottom = 2.dp),
     ) {
         Row(

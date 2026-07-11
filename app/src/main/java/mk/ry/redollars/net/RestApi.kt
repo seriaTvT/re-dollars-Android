@@ -68,6 +68,32 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /**
+     * POST /api/v1/messages/:id/reactions — toggle our reaction. The endpoint takes
+     * user identity from the body (no auth token; mirrors the userscript).
+     */
+    suspend fun toggleReaction(
+        messageId: Long,
+        uid: Long,
+        nickname: String,
+        emoji: String,
+    ): ReactionToggleResponse? = withContext(Dispatchers.IO) {
+        val payload = AppJson.encodeToString(
+            ReactionToggleRequest.serializer(),
+            ReactionToggleRequest(emoji = emoji, userId = uid, nickname = nickname),
+        )
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/messages/$messageId/reactions")
+            .header("User-Agent", Config.USER_AGENT)
+            .post(payload.toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext null
+            runCatching { AppJson.decodeFromString<ReactionToggleResponse>(body) }.getOrNull()
+        }
+    }
+
     /** POST /api/v1/messages/confirm {uid, message} — fallback confirm of a sent message. */
     suspend fun confirm(uid: Long, message: String): ConfirmResponse? = withContext(Dispatchers.IO) {
         val payload = AppJson.encodeToString(
@@ -89,3 +115,10 @@ class RestApi(private val client: OkHttpClient) {
 
 @kotlinx.serialization.Serializable
 private data class ConfirmRequest(val uid: Long, val message: String)
+
+@kotlinx.serialization.Serializable
+private data class ReactionToggleRequest(
+    val emoji: String,
+    @kotlinx.serialization.SerialName("user_id") val userId: Long,
+    val nickname: String,
+)

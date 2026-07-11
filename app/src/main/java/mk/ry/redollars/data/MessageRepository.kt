@@ -115,6 +115,25 @@ class MessageRepository @Inject constructor(
         return available
     }
 
+    /** Toggle our reaction on a message. The WS echo is authoritative; the local patch
+     *  just makes the chip respond instantly (and is deduped when the echo lands). */
+    suspend fun toggleReaction(messageId: Long, uid: Long, nickname: String, emoji: String): Boolean {
+        val res = runCatching { rest.toggleReaction(messageId, uid, nickname, emoji) }.getOrNull()
+        if (res?.status != true) {
+            log("Reaction toggle failed (msg=$messageId emoji=$emoji)")
+            return false
+        }
+        patchReactions(messageId) { list ->
+            val withoutOwn = list.filterNot { it.userId == uid } // server keeps one per user
+            when (res.action) {
+                "added", "replaced" ->
+                    withoutOwn + (res.data ?: ReactionDto(emoji = emoji, userId = uid, nickname = nickname))
+                else -> withoutOwn
+            }
+        }
+        return true
+    }
+
     suspend fun confirm(uid: Long, content: String): MessageDto? {
         val res = runCatching { rest.confirm(uid, content) }.getOrNull()
         val msg = if (res?.found == true) res.message else null
