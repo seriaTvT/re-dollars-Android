@@ -26,6 +26,20 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /** GET /api/v1/messages?since_db_id=&limit= — messages newer than a db id (gap recovery). */
+    suspend fun fetchNewer(sinceDbId: Long, limit: Int = 200): List<MessageDto> = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/messages?since_db_id=$sinceDbId&limit=$limit")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
+            runCatching { AppJson.decodeFromString<List<MessageDto>>(body) }.getOrDefault(emptyList())
+        }
+    }
+
     /** GET /api/v1/messages/status?since_db_id= */
     suspend fun status(sinceDbId: Long = 0): MessageStatus? = withContext(Dispatchers.IO) {
         val req = Request.Builder()
