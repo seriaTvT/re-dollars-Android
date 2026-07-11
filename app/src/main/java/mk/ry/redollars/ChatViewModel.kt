@@ -1,13 +1,13 @@
 package mk.ry.redollars
 
-import android.app.Application
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.mutableStateListOf
-import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,12 +22,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import mk.ry.redollars.data.MessageRepository
 import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
+import javax.inject.Inject
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
 
-class ChatViewModel(app: Application) : AndroidViewModel(app) {
-
-    private val repo = MessageRepository(app, viewModelScope)
+@HiltViewModel
+class ChatViewModel @Inject constructor(
+    private val repo: MessageRepository,
+) : ViewModel() {
 
     // ---- Observable state from the repository ----
     val messages: StateFlow<List<MessageDto>> =
@@ -107,8 +109,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         while (logs.size > 100) logs.removeAt(0)
     }
 
-    override fun onCleared() {
-        repo.close()
-        super.onCleared()
-    }
+    // No onCleared: the repository is an app-scoped singleton — its WebSocket is
+    // quiesced by setForeground(false), not torn down with the ViewModel.
 }
