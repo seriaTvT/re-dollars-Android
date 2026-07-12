@@ -34,6 +34,8 @@ sealed interface WsEvent {
     data class MessageDeleted(val messageId: Long) : WsEvent
     data class MessageEdited(val message: MessageDto) : WsEvent
     data class Notification(val item: NotificationItem) : WsEvent
+    /** Online-state answers/pushes for subscribed uids (presence_result / _update). */
+    data class Presence(val users: List<Pair<Long, Boolean>>) : WsEvent
     data class Log(val line: String) : WsEvent
 }
 
@@ -75,6 +77,22 @@ class DollarsWs(
     fun sendTyping(typing: Boolean) {
         currentSocket?.send("""{"type":"${if (typing) "typing_start" else "typing_stop"}"}""")
     }
+
+    /** Presence subscriptions (presenceHandlers.ts): the server pushes presence_update
+     *  only for subscribed uids; a query answers immediately with presence_result. */
+    fun sendPresenceSubscribe(uids: Collection<Long>) {
+        if (uids.isEmpty()) return
+        currentSocket?.send("""{"type":"presence_subscribe","uids":${uidsJson(uids)}}""")
+        currentSocket?.send("""{"type":"presence_query","uids":${uidsJson(uids)}}""")
+    }
+
+    fun sendPresenceUnsubscribe(uids: Collection<Long>) {
+        if (uids.isEmpty()) return
+        currentSocket?.send("""{"type":"presence_unsubscribe","uids":${uidsJson(uids)}}""")
+    }
+
+    private fun uidsJson(uids: Collection<Long>) =
+        uids.joinToString(",", "[", "]") { "\"$it\"" }
 
     /** Foreground/background toggle: pause heartbeat when hidden, resume/reconnect when shown. */
     fun setActive(active: Boolean) {
@@ -131,6 +149,12 @@ class DollarsWs(
     private fun stopHeartbeat() {
         heartbeat?.cancel()
         heartbeat = null
+    }
+
+    private fun presencePair(user: JsonObject): Pair<Long, Boolean>? {
+        val id = user["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return null
+        val active = user["active"]?.jsonPrimitive?.contentOrNull == "true"
+        return id to active
     }
 
     private val listener = object : WebSocketListener() {
@@ -227,8 +251,20 @@ class DollarsWs(
                     onEvent(WsEvent.MessageEdited(message))
                 }
 
+                "presence_result" -> {
+                    val users = (obj["users"] as? JsonArray)
+                        ?.mapNotNull { (it as? JsonObject)?.let(::presencePair) }
+                        .orEmpty()
+                    if (users.isNotEmpty()) onEvent(WsEvent.Presence(users))
+                }
+
+                "presence_update" -> {
+                    (obj["user"] as? JsonObject)?.let(::presencePair)
+                        ?.let { onEvent(WsEvent.Presence(listOf(it))) }
+                }
+
                 "pong" -> { /* heartbeat ack */ }
-                else -> { /* presence_update etc. not yet handled */ }
+                else -> { /* unhandled frame types */ }
             }
         }
 

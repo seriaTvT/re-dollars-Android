@@ -62,6 +62,8 @@ class ChatViewModel @Inject constructor(
     val notifications: StateFlow<List<NotificationItem>> = repo.notifications
     /** Saved sticker image URLs (favorites tab in the smiley picker). */
     val favorites: StateFlow<List<String>> = repo.favorites
+    /** uids currently online among recently-visible authors (presence dots). */
+    val onlineUsers: StateFlow<Set<Long>> = repo.onlineUsers
 
     // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
@@ -86,6 +88,8 @@ class ChatViewModel @Inject constructor(
     var authReady by mutableStateOf(false); private set
     /** Non-null asks the host to load the OAuth authorize URL in the login WebView. */
     var oauthRequestUrl by mutableStateOf<String?>(null); private set
+    /** uid whose profile sheet is open (tap an avatar). */
+    var profileUid by mutableStateOf<Long?>(null)
     val logs: SnapshotStateList<String> = mutableStateListOf()
 
     data class EditingState(val id: Long, val hiddenQuote: String?)

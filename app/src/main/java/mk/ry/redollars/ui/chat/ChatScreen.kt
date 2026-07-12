@@ -74,6 +74,7 @@ fun ChatScreen(
     val typingUsers by vm.typingUsers.collectAsState()
     val notifications by vm.notifications.collectAsState()
     val favorites by vm.favorites.collectAsState()
+    val onlineUsers by vm.onlineUsers.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
     var showNotifications by rememberSaveable { mutableStateOf(false) }
 
@@ -127,6 +128,8 @@ fun ChatScreen(
                 messages = messages,
                 ownUid = vm.session?.uid,
                 canModify = vm.authReady,
+                onlineUsers = onlineUsers,
+                onShowProfile = { vm.profileUid = it },
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
                 onReact = vm::toggleReaction,
@@ -227,6 +230,8 @@ private fun MessageList(
     messages: List<MessageDto>,
     ownUid: Long?,
     canModify: Boolean,
+    onlineUsers: Set<Long>,
+    onShowProfile: (Long) -> Unit,
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
     onReact: (Long, String) -> Unit,
@@ -339,6 +344,8 @@ private fun MessageList(
                     lastInGroup = !groupable(m, next),
                     ownUid = ownUid,
                     canModify = canModify,
+                    online = m.uid in onlineUsers,
+                    onShowProfile = onShowProfile,
                     onReact = { emoji -> onReact(m.id, emoji) },
                     onReply = { onReply(m) },
                     onEdit = { onEdit(m) },

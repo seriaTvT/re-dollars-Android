@@ -8,8 +8,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -146,6 +149,31 @@ class MessageRepository @Inject constructor(
     /** Upload any non-image file (voice, video, documents) — no auth needed. */
     suspend fun uploadFile(bytes: ByteArray, fileName: String, mime: String): UploadResult =
         uploads.uploadFile(bytes, fileName, mime)
+
+    // ---- Presence dots (presenceHandlers.ts): track authors in the visible window ----
+
+    private val _onlineUsers = MutableStateFlow<Set<Long>>(emptySet())
+    val onlineUsers: StateFlow<Set<Long>> = _onlineUsers.asStateFlow()
+
+    private var presenceSubscribed = setOf<Long>()
+
+    /** Diff-subscribe to [want]; the server then answers a query and pushes updates. */
+    private fun syncPresence(want: Set<Long>) {
+        val added = want - presenceSubscribed
+        val removed = presenceSubscribed - want
+        ws.sendPresenceUnsubscribe(removed)
+        ws.sendPresenceSubscribe(added)
+        presenceSubscribed = want
+        if (removed.isNotEmpty()) _onlineUsers.value = _onlineUsers.value - removed
+    }
+
+    /** A fresh socket has no server-side subscription state; replay ours. */
+    private fun resubscribePresence() {
+        val want = presenceSubscribed
+        presenceSubscribed = emptySet()
+        _onlineUsers.value = emptySet()
+        syncPresence(want)
+    }
 
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return
@@ -331,10 +359,13 @@ class MessageRepository @Inject constructor(
             is WsEvent.Status -> {
                 _connected.value = event.connected
                 // Every (re)connect catches up via since_db_id; WS delivery is best-effort.
-                if (event.connected) scope.launch {
-                    syncNewer()
-                    refreshNotifications()
-                    syncFavorites()
+                if (event.connected) {
+                    resubscribePresence()
+                    scope.launch {
+                        syncNewer()
+                        refreshNotifications()
+                        syncFavorites()
+                    }
                 }
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
@@ -359,6 +390,11 @@ class MessageRepository @Inject constructor(
             is WsEvent.Notification -> {
                 _notifications.value =
                     listOf(event.item) + _notifications.value.filterNot { it.id == event.item.id }
+            }
+            is WsEvent.Presence -> {
+                val current = _onlineUsers.value.toMutableSet()
+                for ((id, active) in event.users) if (active) current.add(id) else current.remove(id)
+                _onlineUsers.value = current
             }
             is WsEvent.MessageDeleted -> scope.launch { dao.markDeleted(event.messageId) }
             is WsEvent.MessageEdited -> scope.launch {
@@ -400,6 +436,19 @@ class MessageRepository @Inject constructor(
 
     private fun log(line: String) {
         _logs.tryEmit(line)
+    }
+
+    init {
+        // Presence subscriptions follow the authors of the newest cached messages
+        // (collectUidsForPresence: last 150; PRESENCE_SYNC_DELAY debounce).
+        @OptIn(FlowPreview::class)
+        scope.launch {
+            messages
+                .map { list -> list.takeLast(150).map { it.uid }.toSet() }
+                .distinctUntilChanged()
+                .debounce(120)
+                .collect { want -> syncPresence(want) }
+        }
     }
 
     private companion object {

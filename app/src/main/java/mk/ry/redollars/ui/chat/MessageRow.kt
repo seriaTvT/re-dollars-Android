@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -91,6 +92,8 @@ fun MessageRow(
     lastInGroup: Boolean,
     ownUid: Long? = null,
     canModify: Boolean = false,
+    online: Boolean = false,
+    onShowProfile: (Long) -> Unit = {},
     onReact: (String) -> Unit = {},
     onReply: () -> Unit = {},
     onEdit: () -> Unit = {},
@@ -172,12 +175,29 @@ fun MessageRow(
         ) {
             if (!isOwn) {
                 if (firstInGroup) {
-                    AsyncImage(
-                        model = avatarUrl(m.avatar, 's'),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(AVATAR).clip(CircleShape),
-                    )
+                    Box {
+                        AsyncImage(
+                            model = avatarUrl(m.avatar, 's'),
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                                .size(AVATAR)
+                                .clip(CircleShape)
+                                .clickable { onShowProfile(m.uid) },
+                        )
+                        if (online) {
+                            Box(
+                                Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(cs.surface)
+                                    .padding(1.5.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFF34C759)),
+                            )
+                        }
+                    }
                 } else {
                     Spacer(Modifier.width(AVATAR))
                 }
