@@ -32,22 +32,25 @@ import mk.ry.redollars.bmo.BmoRenderer
 import mk.ry.redollars.bmo.LocalBmoRenderer
 import mk.ry.redollars.ui.chat.ChatScreen
 import mk.ry.redollars.ui.chat.Lightbox
+import mk.ry.redollars.ui.render.AudioPlayer
+import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.LocalImageViewer
 import mk.ry.redollars.ui.theme.RedollarsTheme
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var bmoRenderer: BmoRenderer
+    @Inject lateinit var audioPlayer: AudioPlayer
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { RedollarsApp(bmoRenderer) }
+        setContent { RedollarsApp(bmoRenderer, audioPlayer) }
     }
 }
 
 @Composable
-private fun RedollarsApp(bmoRenderer: BmoRenderer) {
+private fun RedollarsApp(bmoRenderer: BmoRenderer, audioPlayer: AudioPlayer) {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val vm: ChatViewModel = hiltViewModel()
@@ -68,6 +71,7 @@ private fun RedollarsApp(bmoRenderer: BmoRenderer) {
             CompositionLocalProvider(
                 LocalImageViewer provides { url -> lightboxUrl = url },
                 LocalBmoRenderer provides bmoRenderer,
+                LocalAudioPlayer provides audioPlayer,
             ) {
                 Box(Modifier.fillMaxSize()) {
                     if (!vm.showLogin) {

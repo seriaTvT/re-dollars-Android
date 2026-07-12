@@ -64,7 +64,8 @@ import coil3.compose.AsyncImage
 import mk.ry.redollars.VoiceDraft
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.UserSearchDto
-import mk.ry.redollars.ui.render.AudioPlayer
+import kotlinx.coroutines.flow.MutableStateFlow
+import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.avatarUrl
 
 /** ~50-char BBCode-stripped preview, mirroring the web reply strip. */
@@ -320,7 +321,8 @@ private fun RecordingBar(seconds: Int, onCancel: () -> Unit, onStop: () -> Unit)
 @Composable
 private fun VoiceStrip(draft: VoiceDraft, onCancel: () -> Unit) {
     val cs = MaterialTheme.colorScheme
-    val nowPlaying by AudioPlayer.nowPlaying.collectAsState()
+    val player = LocalAudioPlayer.current
+    val nowPlaying by (player?.nowPlaying ?: MutableStateFlow(null)).collectAsState()
     val source = draft.file.absolutePath
     val playing = nowPlaying == source
     Row(
@@ -334,7 +336,7 @@ private fun VoiceStrip(draft: VoiceDraft, onCancel: () -> Unit) {
     ) {
         Row(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary)) {}
         FilledTonalIconButton(
-            onClick = { AudioPlayer.toggle(source) },
+            onClick = { player?.toggle(source) },
             modifier = Modifier.padding(start = 8.dp).size(30.dp),
         ) {
             if (playing) {
