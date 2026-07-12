@@ -258,6 +258,62 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /** Upload any picked document/video/audio; images route through the image
+     *  endpoint (auth), everything else through the no-auth file endpoint, and the
+     *  inserted tag follows the mime: [img] / [video] / [audio] / [file=name]. */
+    fun attachFile(uri: Uri) {
+        if (uploading) return
+        viewModelScope.launch {
+            uploading = true
+            try {
+                sendStatus = "Uploading file…"
+                val name = withContext(Dispatchers.IO) { displayName(uri) } ?: "file"
+                val mime = appContext.contentResolver.getType(uri) ?: "application/octet-stream"
+                val res: UploadResult
+                val tag: String
+                if (mime.startsWith("image/")) {
+                    if (!authReady) {
+                        sendStatus = "Image upload needs backend authorization (re-login)"
+                        return@launch
+                    }
+                    res = readAndUpload(uri)
+                    tag = res.url?.let { "[img]$it[/img]" }.orEmpty()
+                } else {
+                    val bytes = withContext(Dispatchers.IO) {
+                        runCatching { appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() } }
+                            .getOrNull()
+                    }
+                    res = when {
+                        bytes == null -> UploadResult(error = "Could not read file")
+                        bytes.size > MAX_FILE_BYTES -> UploadResult(error = "Too large (max 200MB)")
+                        else -> repo.uploadFile(bytes, name, mime)
+                    }
+                    tag = res.url?.let {
+                        when {
+                            mime.startsWith("video/") -> "[video]$it[/video]"
+                            mime.startsWith("audio/") -> "[audio]$it[/audio]"
+                            else -> "[file=$name]$it[/file]"
+                        }
+                    }.orEmpty()
+                }
+                if (res.url != null) {
+                    insertAtCursor(tag)
+                    sendStatus = "File attached"
+                } else {
+                    sendStatus = "Upload failed: ${res.error}"
+                }
+            } finally {
+                uploading = false
+            }
+        }
+    }
+
+    private fun displayName(uri: Uri): String? = runCatching {
+        appContext.contentResolver
+            .query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+    }.getOrNull()
+
     /** Save an image URL (e.g. from the lightbox) as a sticker favorite. */
     fun addFavorite(url: String) {
         viewModelScope.launch {
@@ -319,7 +375,7 @@ class ChatViewModel @Inject constructor(
             sendStatus = "Uploading voice…"
             val bytes = withContext(Dispatchers.IO) { runCatching { file.readBytes() }.getOrNull() }
             val res = if (bytes == null) UploadResult(error = "Could not read recording")
-            else repo.uploadVoice(bytes, file.name)
+            else repo.uploadFile(bytes, file.name, "audio/mp4")
             if (voiceDraft?.file == file) { // still the current draft
                 voiceDraft = draft.copy(url = res.url, error = res.error)
                 sendStatus = if (res.url != null) "Voice ready" else "Voice upload failed: ${res.error}"
@@ -568,6 +624,7 @@ class ChatViewModel @Inject constructor(
 
     private companion object {
         const val MAX_IMAGE_BYTES = 50 * 1024 * 1024 // upload server's image cap
+        const val MAX_FILE_BYTES = 200 * 1024 * 1024 // upload server's file cap
         const val MAX_VOICE_SECONDS = 600 // safety cap on a single recording
     }
 

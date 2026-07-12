@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -31,6 +32,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
@@ -92,6 +95,7 @@ fun ChatComposer(
     onUploadFavorite: (Uri) -> Unit,
     onRemoveFavorite: (String) -> Unit,
     onAttachImages: (List<Uri>) -> Unit,
+    onAttachFile: (Uri) -> Unit,
     recordingVoice: Boolean,
     recordSeconds: Int,
     voiceDraft: VoiceDraft?,
@@ -108,6 +112,9 @@ fun ChatComposer(
     val stickerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> uri?.let(onUploadFavorite) }
+    val fileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri -> uri?.let(onAttachFile) }
 
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding()) {
@@ -155,18 +162,38 @@ fun ChatComposer(
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
-                        IconButton(
-                            onClick = {
-                                attachLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        Box {
+                            var showAttach by remember { mutableStateOf(false) }
+                            IconButton(onClick = { showAttach = true }) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = "Attach",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
-                            },
-                        ) {
-                            Icon(
-                                Icons.Filled.Add,
-                                contentDescription = "Attach images",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            }
+                            DropdownMenu(
+                                expanded = showAttach,
+                                onDismissRequest = { showAttach = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("图片") },
+                                    onClick = {
+                                        showAttach = false
+                                        attachLauncher.launch(
+                                            PickVisualMediaRequest(
+                                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                            ),
+                                        )
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("视频 / 文件") },
+                                    onClick = {
+                                        showAttach = false
+                                        fileLauncher.launch("*/*")
+                                    },
+                                )
+                            }
                         }
                         OutlinedTextField(
                             value = value,
