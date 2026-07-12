@@ -214,10 +214,6 @@ class ChatViewModel @Inject constructor(
     /** Upload picked images and insert an [img] tag per success. */
     fun attachImages(uris: List<Uri>) {
         if (uris.isEmpty() || uploading) return
-        if (!authReady) {
-            sendStatus = "Image upload needs backend authorization (re-login)"
-            return
-        }
         viewModelScope.launch {
             uploading = true
             try {
@@ -241,10 +237,6 @@ class ChatViewModel @Inject constructor(
     /** Upload a picked image straight into the sticker favorites (panel upload tile). */
     fun uploadFavorite(uri: Uri) {
         if (uploading) return
-        if (!authReady) {
-            sendStatus = "Sticker upload needs backend authorization (re-login)"
-            return
-        }
         viewModelScope.launch {
             uploading = true
             try {
@@ -276,10 +268,6 @@ class ChatViewModel @Inject constructor(
                 val res: UploadResult
                 val tag: String
                 if (mime.startsWith("image/")) {
-                    if (!authReady) {
-                        sendStatus = "Image upload needs backend authorization (re-login)"
-                        return@launch
-                    }
                     res = readAndUpload(uri)
                     tag = res.url?.let { "[img]$it[/img]" }.orEmpty()
                 } else {

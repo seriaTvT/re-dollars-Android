@@ -151,9 +151,14 @@ class MessageRepository @Inject constructor(
         if (ownUid > 0) runCatching { rest.removeFavorite(ownUid, url) }
     }
 
-    /** Upload an image to the upload server (requires the backend JWT). */
+    /** Only real JWTs go to the upload server: legacy opaque dollars_auth tokens get
+     *  rejected as an invalid bearer, while no header at all is accepted
+     *  (getUploadAuthHeaders in the userscript). */
+    private val jwtPattern = Regex("""^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$""")
+
+    /** Upload an image to the upload server. */
     suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String): UploadResult =
-        uploads.uploadImage(bytes, fileName, mime, authToken)
+        uploads.uploadImage(bytes, fileName, mime, authToken?.takeIf { jwtPattern.matches(it) })
 
     /** Upload any non-image file (voice, video, documents) — no auth needed. */
     suspend fun uploadFile(bytes: ByteArray, fileName: String, mime: String): UploadResult =
