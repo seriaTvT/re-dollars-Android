@@ -35,6 +35,14 @@ object Config {
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/0.2"
 
+    /** BMO assets live on the Bangumi site itself, behind Cloudflare, which rejects
+     *  non-browser user agents — fetch them with a desktop browser UA. bgm.tv is used
+     *  (not chii.in) since it passed the UA-only check in testing. */
+    const val BROWSER_UA =
+        "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
+    const val BMO_BASE_URL = "https://bgm.tv"
+    const val BMO_MANIFEST_URL = "$BMO_BASE_URL/js/lib/bmo/assets/manifest.local.json"
+
     const val HEARTBEAT_INTERVAL_MS = 25_000L
     const val RECONNECT_DELAY_MS = 2_000L
 

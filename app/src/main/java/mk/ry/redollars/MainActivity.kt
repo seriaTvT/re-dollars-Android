@@ -27,6 +27,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.hilt.navigation.compose.hiltViewModel
+import javax.inject.Inject
+import mk.ry.redollars.bmo.BmoRenderer
+import mk.ry.redollars.bmo.LocalBmoRenderer
 import mk.ry.redollars.ui.chat.ChatScreen
 import mk.ry.redollars.ui.chat.Lightbox
 import mk.ry.redollars.ui.render.LocalImageViewer
@@ -34,15 +37,17 @@ import mk.ry.redollars.ui.theme.RedollarsTheme
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var bmoRenderer: BmoRenderer
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { RedollarsApp() }
+        setContent { RedollarsApp(bmoRenderer) }
     }
 }
 
 @Composable
-private fun RedollarsApp() {
+private fun RedollarsApp(bmoRenderer: BmoRenderer) {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val vm: ChatViewModel = hiltViewModel()
@@ -60,7 +65,10 @@ private fun RedollarsApp() {
                 vm.oauthRequestUrl?.let { webView?.loadUrl(it) }
             }
 
-            CompositionLocalProvider(LocalImageViewer provides { url -> lightboxUrl = url }) {
+            CompositionLocalProvider(
+                LocalImageViewer provides { url -> lightboxUrl = url },
+                LocalBmoRenderer provides bmoRenderer,
+            ) {
                 Box(Modifier.fillMaxSize()) {
                     if (!vm.showLogin) {
                         ChatScreen(
