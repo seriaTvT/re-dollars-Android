@@ -67,6 +67,11 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.5.0")
     implementation("io.coil-kt.coil3:coil-gif:3.5.0")
 
+    // ExoPlayer: the platform VideoView/MediaPlayer stack fails on Cloudflare-fronted
+    // HTTPS/HTTP-2 video; media3 uses a robust HTTP stack + broad codec support.
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-ui:1.8.0")
+
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
