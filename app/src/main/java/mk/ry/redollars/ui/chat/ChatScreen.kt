@@ -107,6 +107,7 @@ fun ChatScreen(
                 onUploadFavorite = vm::uploadFavorite,
                 onRemoveFavorite = vm::removeFavorite,
                 onAttachImages = vm::attachImages,
+                onAttachFile = vm::attachFile,
                 recordingVoice = vm.recordingVoice,
                 recordSeconds = vm.recordSeconds,
                 voiceDraft = vm.voiceDraft,
