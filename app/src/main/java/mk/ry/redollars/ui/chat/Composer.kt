@@ -1,5 +1,7 @@
 package mk.ry.redollars.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -28,8 +30,10 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -37,6 +41,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,13 +51,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import coil3.compose.AsyncImage
+import mk.ry.redollars.VoiceDraft
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.UserSearchDto
+import mk.ry.redollars.ui.render.AudioPlayer
 import mk.ry.redollars.ui.render.avatarUrl
 
 /** ~50-char BBCode-stripped preview, mirroring the web reply strip. */
@@ -83,6 +92,12 @@ fun ChatComposer(
     onUploadFavorite: (Uri) -> Unit,
     onRemoveFavorite: (String) -> Unit,
     onAttachImages: (List<Uri>) -> Unit,
+    recordingVoice: Boolean,
+    recordSeconds: Int,
+    voiceDraft: VoiceDraft?,
+    onStartVoice: () -> Unit,
+    onStopVoice: () -> Unit,
+    onCancelVoice: () -> Unit,
     onSend: (String) -> Unit,
     onLogin: () -> Unit,
 ) {
@@ -122,59 +137,89 @@ fun ChatComposer(
                     Text("Log in to chat")
                 }
             } else {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconButton(onClick = { showSmilies = !showSmilies }) {
-                        Icon(
-                            Icons.Filled.Face,
-                            contentDescription = "Smilies",
-                            tint = if (showSmilies) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    IconButton(
-                        onClick = {
-                            attachLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
-                            )
-                        },
+                if (voiceDraft != null) {
+                    VoiceStrip(voiceDraft, onCancelVoice)
+                }
+                if (recordingVoice) {
+                    RecordingBar(recordSeconds, onCancelVoice, onStopVoice)
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = "Attach images",
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        IconButton(onClick = { showSmilies = !showSmilies }) {
+                            Icon(
+                                Icons.Filled.Face,
+                                contentDescription = "Smilies",
+                                tint = if (showSmilies) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                attachLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            },
+                        ) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "Attach images",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        OutlinedTextField(
+                            value = value,
+                            onValueChange = onValueChange,
+                            modifier = Modifier.weight(1f),
+                            placeholder = {
+                                Text(
+                                    when {
+                                        editing -> "Edit message…"
+                                        replyTo != null -> "Reply…"
+                                        else -> "Message…"
+                                    },
+                                )
+                            },
+                            maxLines = 5,
+                            shape = RoundedCornerShape(24.dp),
                         )
-                    }
-                    OutlinedTextField(
-                        value = value,
-                        onValueChange = onValueChange,
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(
-                                when {
-                                    editing -> "Edit message…"
-                                    replyTo != null -> "Reply…"
-                                    else -> "Message…"
+                        Spacer(Modifier.width(8.dp))
+                        // Telegram-style swap: mic when there's nothing to send yet.
+                        if (value.text.isBlank() && voiceDraft == null && !editing) {
+                            val context = LocalContext.current
+                            val micPermission = rememberLauncherForActivityResult(
+                                ActivityResultContracts.RequestPermission(),
+                            ) { granted -> if (granted) onStartVoice() }
+                            FilledIconButton(
+                                onClick = {
+                                    if (ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO,
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        onStartVoice()
+                                    } else {
+                                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
                                 },
-                            )
-                        },
-                        maxLines = 5,
-                        shape = RoundedCornerShape(24.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    FilledIconButton(
-                        onClick = {
-                            val trimmed = value.text.trim()
-                            if (trimmed.isNotEmpty()) {
-                                showSmilies = false
-                                onSend(trimmed)
+                            ) {
+                                Text("🎤")
                             }
-                        },
-                        enabled = value.text.isNotBlank(),
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                        } else {
+                            FilledIconButton(
+                                onClick = {
+                                    val trimmed = value.text.trim()
+                                    if (trimmed.isNotEmpty() || voiceDraft?.url != null) {
+                                        showSmilies = false
+                                        onSend(trimmed)
+                                    }
+                                },
+                                enabled = value.text.isNotBlank() || voiceDraft?.url != null,
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                            }
+                        }
                     }
                 }
                 AnimatedVisibility(visible = showSmilies) {
@@ -200,6 +245,112 @@ fun ChatComposer(
                     )
                 }
             }
+        }
+    }
+}
+
+private fun formatVoiceSeconds(seconds: Int): String =
+    "%d:%02d".format(seconds / 60, seconds % 60)
+
+/** Live recording state: pulsating-red timer, cancel, and a stop button. */
+@Composable
+private fun RecordingBar(seconds: Int, onCancel: () -> Unit, onStop: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(cs.error),
+        )
+        Text(
+            text = "Recording… ${formatVoiceSeconds(seconds)}",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(start = 8.dp).weight(1f),
+        )
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cancel recording",
+                tint = cs.onSurfaceVariant,
+            )
+        }
+        FilledIconButton(onClick = onStop) {
+            Spacer(
+                Modifier
+                    .size(12.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(cs.onPrimary),
+            )
+        }
+    }
+}
+
+/** Recorded clip awaiting send: play/pause preview, upload status, cancel. */
+@Composable
+private fun VoiceStrip(draft: VoiceDraft, onCancel: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val nowPlaying by AudioPlayer.nowPlaying.collectAsState()
+    val source = draft.file.absolutePath
+    val playing = nowPlaying == source
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(cs.surfaceContainerHigh)
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary)) {}
+        FilledTonalIconButton(
+            onClick = { AudioPlayer.toggle(source) },
+            modifier = Modifier.padding(start = 8.dp).size(30.dp),
+        ) {
+            if (playing) {
+                Spacer(
+                    Modifier
+                        .size(9.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(cs.primary),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "Play recording",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Column(Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 6.dp)) {
+            Text(
+                text = "Voice message · ${formatVoiceSeconds(draft.durationSec)}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = cs.secondary,
+            )
+            Text(
+                text = when {
+                    draft.url != null -> "Ready to send"
+                    draft.error != null -> "Upload failed: ${draft.error}"
+                    else -> "Uploading…"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (draft.error != null) cs.error else cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Discard recording",
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }

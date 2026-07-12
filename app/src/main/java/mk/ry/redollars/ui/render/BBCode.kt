@@ -62,6 +62,7 @@ private data class ImageBlock(val urls: List<String>) : Block
 private data class QuoteBlock(val inner: String) : Block
 private data class CodeBlock(val content: String) : Block
 private data class LinkBlock(val label: String, val url: String) : Block
+private data class AudioBlock(val url: String) : Block
 
 private val BLOCK_REGEX = Regex(
     "\\[img\\]([\\s\\S]+?)\\[/img\\]" +                        // 1
@@ -100,7 +101,7 @@ private fun parseBlocks(message: String): List<Block> {
             g[3] != null -> if (g[3]!!.value.isNotBlank()) out.add(QuoteBlock(g[3]!!.value))
             g[4] != null -> out.add(CodeBlock(g[4]!!.value))
             g[5] != null -> out.add(LinkBlock("[视频]", g[5]!!.value.trim()))
-            g[6] != null -> out.add(LinkBlock("[音频]", g[6]!!.value.trim()))
+            g[6] != null -> out.add(AudioBlock(g[6]!!.value.trim()))
             g[8] != null -> out.add(LinkBlock(g[7]?.value?.trim().orEmpty().ifEmpty { "[附件]" }, g[8]!!.value.trim()))
         }
     }
@@ -277,6 +278,7 @@ fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
                 is QuoteBlock -> QuoteView(block.inner)
                 is CodeBlock -> CodeView(block.content)
                 is LinkBlock -> LinkLine(block.label, block.url)
+                is AudioBlock -> AudioBlockView(block.url)
             }
         }
     }

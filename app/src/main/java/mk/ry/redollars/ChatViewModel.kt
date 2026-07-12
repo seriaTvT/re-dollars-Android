@@ -33,9 +33,19 @@ import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserSearchDto
 import mk.ry.redollars.net.WsUser
+import mk.ry.redollars.voice.VoiceRecorder
+import java.io.File
 import javax.inject.Inject
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
+
+/** A recorded voice clip: playable locally at once, sendable once [url] is set. */
+data class VoiceDraft(
+    val file: File,
+    val durationSec: Int,
+    val url: String? = null,
+    val error: String? = null,
+)
 
 @HiltViewModel
 class ChatViewModel @Inject constructor(
@@ -260,6 +270,77 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { repo.removeFavorite(url) }
     }
 
+    // ---- Voice messages (useVoiceRecorder.ts): record -> upload -> [audio] on send ----
+
+    private val voiceRecorder = VoiceRecorder(appContext)
+    private var voiceTicker: Job? = null
+
+    var recordingVoice by mutableStateOf(false)
+        private set
+    var recordSeconds by mutableStateOf(0)
+        private set
+    var voiceDraft by mutableStateOf<VoiceDraft?>(null)
+        private set
+
+    fun startVoiceRecording() {
+        if (recordingVoice) return
+        discardVoiceDraft()
+        if (!voiceRecorder.start()) {
+            sendStatus = "Could not start recording"
+            return
+        }
+        recordingVoice = true
+        recordSeconds = 0
+        voiceTicker = viewModelScope.launch {
+            while (recordingVoice) {
+                delay(1_000)
+                recordSeconds++
+                if (recordSeconds >= MAX_VOICE_SECONDS) {
+                    stopVoiceRecording()
+                }
+            }
+        }
+    }
+
+    /** Stop recording and upload right away, so the send path stays synchronous:
+     *  the draft becomes sendable once its URL arrives. */
+    fun stopVoiceRecording() {
+        if (!recordingVoice) return
+        recordingVoice = false
+        voiceTicker?.cancel()
+        val file = voiceRecorder.stop()
+        if (file == null) {
+            sendStatus = "Recording failed"
+            return
+        }
+        val draft = VoiceDraft(file, recordSeconds.coerceAtLeast(1))
+        voiceDraft = draft
+        viewModelScope.launch {
+            sendStatus = "Uploading voice…"
+            val bytes = withContext(Dispatchers.IO) { runCatching { file.readBytes() }.getOrNull() }
+            val res = if (bytes == null) UploadResult(error = "Could not read recording")
+            else repo.uploadVoice(bytes, file.name)
+            if (voiceDraft?.file == file) { // still the current draft
+                voiceDraft = draft.copy(url = res.url, error = res.error)
+                sendStatus = if (res.url != null) "Voice ready" else "Voice upload failed: ${res.error}"
+            }
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        if (recordingVoice) {
+            recordingVoice = false
+            voiceTicker?.cancel()
+            voiceRecorder.cancel()
+        }
+        discardVoiceDraft()
+    }
+
+    private fun discardVoiceDraft() {
+        voiceDraft?.file?.delete()
+        voiceDraft = null
+    }
+
     private suspend fun readAndUpload(uri: Uri): UploadResult = withContext(Dispatchers.IO) {
         val resolver = appContext.contentResolver
         val mime = resolver.getType(uri) ?: "image/jpeg"
@@ -395,6 +476,7 @@ class ChatViewModel @Inject constructor(
 
     fun startEdit(m: MessageDto) {
         replyTo = null
+        cancelVoiceRecording() // edits never carry a new voice attachment
         val hidden = leadingQuote.find(m.message)?.value
         editing = EditingState(m.id, hidden)
         setComposer(if (hidden != null) m.message.removePrefix(hidden) else m.message)
@@ -432,8 +514,16 @@ class ChatViewModel @Inject constructor(
     fun beginSend(text: String): String {
         stopTyping()
         val content = transformMentions(text)
-        val body = replyTo?.let { "[quote=${it.id}][/quote]$content" } ?: content
+        // Voice rides along on its own line (sendMessage.ts attachVoice).
+        val voice = voiceDraft?.url?.let { "[audio]$it[/audio]" }
+        val merged = when {
+            voice == null -> content
+            content.isBlank() -> voice
+            else -> "$content\n$voice"
+        }
+        val body = replyTo?.let { "[quote=${it.id}][/quote]$merged" } ?: merged
         replyTo = null
+        discardVoiceDraft()
         setComposer("")
         pendingText = body
         sendStatus = "Posting via WebView…"
@@ -478,6 +568,7 @@ class ChatViewModel @Inject constructor(
 
     private companion object {
         const val MAX_IMAGE_BYTES = 50 * 1024 * 1024 // upload server's image cap
+        const val MAX_VOICE_SECONDS = 600 // safety cap on a single recording
     }
 
     // No onCleared: the repository is an app-scoped singleton — its WebSocket is

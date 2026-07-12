@@ -143,6 +143,10 @@ class MessageRepository @Inject constructor(
     suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String): UploadResult =
         uploads.uploadImage(bytes, fileName, mime, authToken)
 
+    /** Upload a voice clip via the file endpoint (no auth needed). */
+    suspend fun uploadVoice(bytes: ByteArray, fileName: String): UploadResult =
+        uploads.uploadFile(bytes, fileName, "audio/mp4")
+
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return
         val list = runCatching { rest.fetchNotifications(ownUid) }.getOrDefault(emptyList())
