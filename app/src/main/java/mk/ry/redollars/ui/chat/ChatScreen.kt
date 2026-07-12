@@ -298,6 +298,20 @@ private fun MessageList(
             .collect { onLoadOlder() }
     }
 
+    // Keep the newest message visible while the viewport shrinks (IME opening, reply
+    // strip appearing…): each shrink re-pins the bottom, so through an IME animation
+    // the last item stays partially visible and atBottom keeps holding.
+    LaunchedEffect(listState) {
+        var lastHeight = 0
+        snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { height ->
+            if (height in 1 until lastHeight && atBottom) {
+                val total = listState.layoutInfo.totalItemsCount
+                if (total > 0) listState.scrollToItem(total - 1)
+            }
+            lastHeight = height
+        }
+    }
+
     Box(modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
