@@ -1,5 +1,7 @@
 package mk.ry.redollars.ui.render
 
+import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -23,20 +25,48 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import mk.ry.redollars.di.ApplicationScope
+import mk.ry.redollars.net.Config
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.io.File
+import javax.inject.Inject
+import javax.inject.Singleton
+
+/** Provided at the app root so bubbles/preview can drive shared audio playback. */
+val LocalAudioPlayer = staticCompositionLocalOf<AudioPlayer?> { null }
 
 /**
  * One shared MediaPlayer for the whole app: starting a clip stops whatever else was
- * playing. Sources are http(s) URLs ([audio] messages) or local paths (voice preview).
+ * playing. Remote `[audio]` URLs are downloaded through OkHttp to the cache first and
+ * played from disk — Android's MediaPlayer network stack is unreliable against the
+ * Cloudflare-fronted upload host, while local-file playback is rock solid and the
+ * OkHttp client already fetches from that host everywhere else. Local paths (the voice
+ * preview) play directly.
  */
-object AudioPlayer {
+@Singleton
+class AudioPlayer @Inject constructor(
+    private val http: OkHttpClient,
+    @param:ApplicationContext context: Context,
+    @param:ApplicationScope private val scope: CoroutineScope,
+) {
+    private val cacheDir = File(context.cacheDir, "audio").apply { mkdirs() }
     private var player: MediaPlayer? = null
+    private var loadJob: Job? = null
 
     private val _nowPlaying = MutableStateFlow<String?>(null)
     val nowPlaying: StateFlow<String?> = _nowPlaying.asStateFlow()
@@ -47,9 +77,52 @@ object AudioPlayer {
             return
         }
         stop()
+        _nowPlaying.value = source // reflects "loading" until the clip actually starts
+        loadJob = scope.launch {
+            val local = resolveLocal(source)
+            if (local == null || _nowPlaying.value != source) {
+                if (_nowPlaying.value == source) stop()
+                return@launch
+            }
+            withContext(Dispatchers.Main) {
+                if (_nowPlaying.value == source) startLocal(local)
+            }
+        }
+    }
+
+    /** A local path passes through; a remote URL is cached (once) and its path returned. */
+    private suspend fun resolveLocal(source: String): String? {
+        if (source.startsWith("/")) return source
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val file = File(cacheDir, Integer.toHexString(source.hashCode()) + ".m4a")
+                if (!file.exists() || file.length() == 0L) {
+                    val req = Request.Builder()
+                        .url(source)
+                        .header("User-Agent", Config.USER_AGENT)
+                        .build()
+                    http.newCall(req).execute().use { res ->
+                        if (!res.isSuccessful) return@runCatching null
+                        res.body?.byteStream()?.use { input ->
+                            file.outputStream().use { input.copyTo(it) }
+                        }
+                    }
+                }
+                if (file.length() > 0L) file.absolutePath else null
+            }.getOrNull()
+        }
+    }
+
+    private fun startLocal(path: String) {
         runCatching {
             val p = MediaPlayer()
-            p.setDataSource(source)
+            p.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            p.setDataSource(path)
             p.setOnPreparedListener { it.start() }
             p.setOnCompletionListener { stop() }
             p.setOnErrorListener { _, _, _ ->
@@ -58,11 +131,12 @@ object AudioPlayer {
             }
             p.prepareAsync()
             player = p
-            _nowPlaying.value = source
         }.onFailure { stop() }
     }
 
     fun stop() {
+        loadJob?.cancel()
+        loadJob = null
         runCatching {
             player?.stop()
             player?.release()
@@ -85,20 +159,21 @@ private fun formatMs(ms: Int): String {
 @Composable
 fun AudioBlockView(url: String, modifier: Modifier = Modifier) {
     val cs = MaterialTheme.colorScheme
-    val nowPlaying by AudioPlayer.nowPlaying.collectAsState()
+    val player = LocalAudioPlayer.current
+    val nowPlaying by (player?.nowPlaying ?: MutableStateFlow(null)).collectAsState()
     val playing = nowPlaying == url
     var progress by remember { mutableFloatStateOf(0f) }
     var positionMs by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(playing) {
-        if (!playing) {
+        if (!playing || player == null) {
             progress = 0f
             positionMs = 0
             return@LaunchedEffect
         }
         while (true) {
-            val duration = AudioPlayer.durationMs()
-            positionMs = AudioPlayer.positionMs()
+            val duration = player.durationMs()
+            positionMs = player.positionMs()
             progress = if (duration > 0) positionMs.toFloat() / duration else 0f
             delay(200)
         }
@@ -109,7 +184,7 @@ fun AudioBlockView(url: String, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FilledTonalIconButton(
-            onClick = { AudioPlayer.toggle(url) },
+            onClick = { player?.toggle(url) },
             modifier = Modifier.size(34.dp),
         ) {
             if (playing) {
