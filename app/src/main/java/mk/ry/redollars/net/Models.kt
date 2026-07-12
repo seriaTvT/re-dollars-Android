@@ -220,6 +220,18 @@ data class UserProfileDto(
     val username: String = "",
     val nickname: String = "",
     val avatar: UserAvatarDto? = null,
+    val sign: String? = null,
+    val url: String? = null,
+    val stats: UserStatsDto? = null,
+)
+
+/** Chat-activity stats attached to /users/:id. Times are ISO-8601 strings. */
+@Serializable
+data class UserStatsDto(
+    @SerialName("message_count") val messageCount: Long = 0,
+    @SerialName("average_messages_per_day") val averagePerDay: Double = 0.0,
+    @SerialName("first_message_time") val firstMessageTime: String? = null,
+    @SerialName("last_message_time") val lastMessageTime: String? = null,
 )
 
 @Serializable
