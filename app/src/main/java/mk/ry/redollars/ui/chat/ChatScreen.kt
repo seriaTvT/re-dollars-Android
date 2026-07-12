@@ -145,6 +145,15 @@ fun ChatScreen(
         }
     }
 
+    vm.profileUid?.let { uid ->
+        UserProfileSheet(
+            uid = uid,
+            online = uid in onlineUsers,
+            loadProfile = vm::loadProfile,
+            onDismiss = { vm.profileUid = null },
+        )
+    }
+
     if (showNotifications) {
         NotificationsSheet(
             notifications = notifications,

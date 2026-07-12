@@ -502,6 +502,9 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch { repo.toggleReaction(messageId, info.uid, info.name, emoji) }
     }
 
+    /** Resolve a profile for the profile sheet (backend user cache). */
+    suspend fun loadProfile(uid: Long) = repo.fetchUserProfile(uid)
+
     /** Page one more window of history above the oldest displayed message. */
     fun loadOlder() {
         if (loadingOlder || historyExhausted) return
