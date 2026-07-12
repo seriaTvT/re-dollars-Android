@@ -27,6 +27,7 @@ import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.GalleryResponse
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.UploadApi
 import mk.ry.redollars.net.UploadResult
@@ -104,6 +105,14 @@ class MessageRepository @Inject constructor(
     /** Mention autocomplete: users whose nickname/username matches [query]. */
     suspend fun searchUsers(query: String): List<UserSearchDto> =
         runCatching { rest.searchUsers(query) }.getOrDefault(emptyList())
+
+    /** Full-text message search (newest first). */
+    suspend fun searchMessages(query: String, offset: Int): List<MessageDto> =
+        runCatching { rest.searchMessages(query, offset) }.getOrDefault(emptyList())
+
+    /** One page of the chat media wall. */
+    suspend fun fetchGallery(offset: Int): GalleryResponse? =
+        runCatching { rest.fetchGallery(offset) }.getOrNull()
 
     // ---- Sticker favorites (favorites.ts): image URLs, local cache + backend sync ----
 

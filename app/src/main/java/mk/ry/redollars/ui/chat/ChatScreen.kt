@@ -20,12 +20,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -77,6 +80,8 @@ fun ChatScreen(
     val onlineUsers by vm.onlineUsers.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
     var showNotifications by rememberSaveable { mutableStateOf(false) }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
+    var showGallery by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -86,6 +91,8 @@ fun ChatScreen(
                 notificationCount = notifications.size,
                 debugOn = showDebug,
                 onToggleDebug = { showDebug = !showDebug },
+                onSearch = { showSearch = true },
+                onGallery = { showGallery = true },
                 onNotifications = { showNotifications = true },
                 onAccount = onOpenLogin,
             )
@@ -145,6 +152,13 @@ fun ChatScreen(
         }
     }
 
+    if (showSearch) {
+        SearchSheet(search = vm::searchMessages, onDismiss = { showSearch = false })
+    }
+    if (showGallery) {
+        GallerySheet(fetch = vm::fetchGallery, onDismiss = { showGallery = false })
+    }
+
     vm.profileUid?.let { uid ->
         UserProfileSheet(
             uid = uid,
@@ -175,6 +189,8 @@ private fun ChatTopBar(
     notificationCount: Int,
     debugOn: Boolean,
     onToggleDebug: () -> Unit,
+    onSearch: () -> Unit,
+    onGallery: () -> Unit,
     onNotifications: () -> Unit,
     onAccount: () -> Unit,
 ) {
@@ -190,6 +206,9 @@ private fun ChatTopBar(
             }
         },
         actions = {
+            IconButton(onClick = onSearch) {
+                Icon(Icons.Filled.Search, contentDescription = "Search")
+            }
             IconButton(onClick = onNotifications) {
                 BadgedBox(
                     badge = {
@@ -201,16 +220,30 @@ private fun ChatTopBar(
                     Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
                 }
             }
-            IconButton(onClick = onToggleDebug) {
-                Icon(
-                    Icons.Filled.Info,
-                    contentDescription = "Debug",
-                    tint = if (debugOn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             IconButton(onClick = onAccount) {
                 Icon(Icons.Filled.AccountCircle, contentDescription = "Account")
+            }
+            Box {
+                var showMenu by remember { mutableStateOf(false) }
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("图片墙") },
+                        onClick = {
+                            showMenu = false
+                            onGallery()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (debugOn) "隐藏调试信息" else "调试信息") },
+                        onClick = {
+                            showMenu = false
+                            onToggleDebug()
+                        },
+                    )
+                }
             }
         },
     )
