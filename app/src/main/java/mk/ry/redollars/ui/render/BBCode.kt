@@ -24,8 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -270,6 +272,12 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
 @Composable
 fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
     val blocks = remember(message) { parseBlocks(message) }
+    // Only pure-text messages collapse (shouldCollapseMessage: no media/quote/code).
+    val loneText = blocks.singleOrNull() as? TextBlock
+    if (loneText != null) {
+        Column(modifier) { CollapsibleInlineText(loneText.text) }
+        return
+    }
     Column(modifier) {
         blocks.forEach { block ->
             when (block) {
@@ -285,7 +293,11 @@ fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun InlineText(text: String) {
+private fun InlineText(
+    text: String,
+    maxLines: Int = Int.MAX_VALUE,
+    onOverflow: (Boolean) -> Unit = {},
+) {
     val cs = MaterialTheme.colorScheme
     val result = remember(text, cs.primary, cs.surfaceVariant) {
         buildInline(text, linkColor = cs.primary, maskBg = cs.surfaceVariant)
@@ -294,7 +306,36 @@ private fun InlineText(text: String) {
         text = result.annotated,
         inlineContent = result.inline,
         style = MaterialTheme.typography.bodyMedium,
+        maxLines = maxLines,
+        onTextLayout = { onOverflow(it.hasVisualOverflow) },
     )
+}
+
+/** Text-only messages collapse past ~15 lines (COLLAPSE_MAX_HEIGHT ≈ 300px on the
+ *  web) with a 展开/收起 toggle; media/quote/code messages never collapse. */
+private const val COLLAPSE_LINES = 15
+
+@Composable
+private fun CollapsibleInlineText(text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    var overflowed by remember(text) { mutableStateOf(false) }
+    Column {
+        InlineText(
+            text = text,
+            maxLines = if (expanded) Int.MAX_VALUE else COLLAPSE_LINES,
+            onOverflow = { if (!expanded) overflowed = it },
+        )
+        if (overflowed || expanded) {
+            Text(
+                text = if (expanded) "收起" else "展开",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(top = 4.dp, bottom = 2.dp),
+            )
+        }
+    }
 }
 
 @Composable
