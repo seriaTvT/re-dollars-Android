@@ -132,6 +132,39 @@ class RestApi(private val client: OkHttpClient) {
         client.newCall(req).execute().use { it.isSuccessful }
     }
 
+    /** GET /api/v1/search?q=&offset=&limit= — full-text search, newest first. */
+    suspend fun searchMessages(query: String, offset: Int, limit: Int = 20): List<MessageDto> =
+        withContext(Dispatchers.IO) {
+            val q = java.net.URLEncoder.encode(query, "UTF-8")
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/search?q=$q&offset=$offset&limit=$limit")
+                .header("User-Agent", Config.USER_AGENT)
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
+                runCatching { AppJson.decodeFromString<SearchResponse>(body) }.getOrNull()
+                    ?.takeIf { it.status }?.results ?: emptyList()
+            }
+        }
+
+    /** GET /api/v1/gallery?offset=&limit= — media wall page. */
+    suspend fun fetchGallery(offset: Int, limit: Int = 40): GalleryResponse? =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/gallery?offset=$offset&limit=$limit")
+                .header("User-Agent", Config.USER_AGENT)
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful || body.isBlank()) return@withContext null
+                runCatching { AppJson.decodeFromString<GalleryResponse>(body) }.getOrNull()
+                    ?.takeIf { it.status }
+            }
+        }
+
     /** GET /api/v1/favorites?uid= — saved sticker URLs. Null on failure (vs empty list)
      *  so callers can keep their local cache. */
     suspend fun fetchFavorites(uid: Long): List<String>? = withContext(Dispatchers.IO) {

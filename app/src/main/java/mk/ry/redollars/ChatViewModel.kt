@@ -505,6 +505,12 @@ class ChatViewModel @Inject constructor(
     /** Resolve a profile for the profile sheet (backend user cache). */
     suspend fun loadProfile(uid: Long) = repo.fetchUserProfile(uid)
 
+    /** Full-text search page (search sheet). */
+    suspend fun searchMessages(query: String, offset: Int) = repo.searchMessages(query, offset)
+
+    /** Media wall page (gallery sheet). */
+    suspend fun fetchGallery(offset: Int) = repo.fetchGallery(offset)
+
     /** Page one more window of history above the oldest displayed message. */
     fun loadOlder() {
         if (loadingOlder || historyExhausted) return

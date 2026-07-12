@@ -241,6 +241,34 @@ data class UserAvatarDto(
     val small: String? = null,
 )
 
+/** GET /search?q= — full-text message search; results are enriched messages. */
+@Serializable
+data class SearchResponse(
+    val status: Boolean = false,
+    val results: List<MessageDto> = emptyList(),
+)
+
+/** GET /gallery — media wall of images/videos posted in chat. */
+@Serializable
+data class GalleryResponse(
+    val status: Boolean = false,
+    val items: List<GalleryItemDto> = emptyList(),
+    val hasMore: Boolean = false,
+    val total: Long = 0,
+)
+
+@Serializable
+data class GalleryItemDto(
+    val url: String = "",
+    val thumbnailUrl: String? = null,
+    val type: String = "image",
+    @SerialName("message_id") @Serializable(with = FlexLongSerializer::class) val messageId: Long = 0,
+    @Serializable(with = FlexLongSerializer::class) val timestamp: Long = 0,
+    @Serializable(with = FlexLongSerializer::class) val uid: Long = 0,
+    val nickname: String = "",
+    val avatar: String = "",
+)
+
 /** GET /favorites?uid= — saved sticker image URLs (favorites.ts). */
 @Serializable
 data class FavoritesResponse(
