@@ -264,6 +264,19 @@ class MessageRepository @Inject constructor(
         return false
     }
 
+    // ---- FCM push ----
+
+    /** Jump target set by MainActivity when a push notification is tapped. */
+    val pushJumpRequests = MutableStateFlow<Long?>(null)
+
+    /** Bind our FCM registration token to this account on the backend. No-op until
+     *  the OAuth token exists; called again on every auth-ready and token rotation. */
+    suspend fun registerPushToken(fcmToken: String) {
+        val token = authToken ?: return
+        val ok = runCatching { rest.registerPush(fcmToken, token) }.getOrDefault(false)
+        log(if (ok) "Push token registered" else "Push token registration failed")
+    }
+
     /** Edit own message; Room is patched immediately, the WS echo re-enriches it. */
     suspend fun editMessage(id: Long, content: String): Boolean {
         val token = authToken ?: return false
