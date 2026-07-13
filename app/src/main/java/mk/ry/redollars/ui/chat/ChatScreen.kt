@@ -160,9 +160,13 @@ fun ChatScreen(
     }
 
     vm.profileUid?.let { uid ->
+        val blockedUsers by vm.blockedUsers.collectAsState()
         UserProfileSheet(
             uid = uid,
             online = uid in onlineUsers,
+            blocked = uid in blockedUsers,
+            canBlock = uid != vm.session?.uid,
+            onToggleBlock = { vm.toggleBlock(uid) },
             loadProfile = vm::loadProfile,
             onDismiss = { vm.profileUid = null },
         )
