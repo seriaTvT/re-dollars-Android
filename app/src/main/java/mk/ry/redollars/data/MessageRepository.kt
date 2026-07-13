@@ -63,10 +63,47 @@ class MessageRepository @Inject constructor(
     /** How many of the newest cached rows the UI shows; grows as the user pages up. */
     private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
 
+    // ---- Blocked users: app-local list; Room keeps the rows, display filters them ----
+    // (The web mirrors Bangumi's data_ignore_users; here the list is managed in-app.)
+
+    private val blockListSerializer = ListSerializer(Long.serializer())
+
+    private val _blockedUsers = MutableStateFlow(loadBlockedCache())
+    val blockedUsers: StateFlow<Set<Long>> = _blockedUsers.asStateFlow()
+
+    private fun loadBlockedCache(): Set<Long> =
+        prefs.getString(PREF_BLOCKED, null)
+            ?.let { runCatching { AppJson.decodeFromString(blockListSerializer, it) }.getOrNull() }
+            ?.toSet() ?: emptySet()
+
+    fun setBlocked(uid: Long, blocked: Boolean) {
+        val next = if (blocked) _blockedUsers.value + uid else _blockedUsers.value - uid
+        _blockedUsers.value = next
+        prefs.edit()
+            .putString(PREF_BLOCKED, AppJson.encodeToString(blockListSerializer, next.toList()))
+            .apply()
+        if (blocked) {
+            clearTyping(uid)
+            _notifications.value = _notifications.value.filterNot { it.uid == uid }
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    val messages: Flow<List<MessageDto>> = displayLimit
-        .flatMapLatest { limit -> dao.observeRecent(limit) }
-        .map { rows -> rows.map { it.toDto() } }
+    val messages: Flow<List<MessageDto>> = kotlinx.coroutines.flow.combine(
+        displayLimit.flatMapLatest { limit -> dao.observeRecent(limit) },
+        _blockedUsers,
+    ) { rows, blocked ->
+        rows.mapNotNull { row ->
+            val dto = row.toDto()
+            val quoted = dto.replyDetails
+            when {
+                dto.uid in blocked -> null // hidden entirely
+                quoted != null && quoted.uid in blocked ->
+                    dto.copy(replyDetails = quoted.copy(content = "[已屏蔽]", firstImage = null))
+                else -> dto
+            }
+        }
+    }
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -192,7 +229,7 @@ class MessageRepository @Inject constructor(
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return
         val list = runCatching { rest.fetchNotifications(ownUid) }.getOrDefault(emptyList())
-        _notifications.value = list
+        _notifications.value = list.filterNot { it.uid in _blockedUsers.value }
     }
 
     suspend fun markNotificationRead(id: Long) {
@@ -402,6 +439,7 @@ class MessageRepository @Inject constructor(
                 }
             }
             is WsEvent.Notification -> {
+                if (event.item.uid in _blockedUsers.value) return
                 _notifications.value =
                     listOf(event.item) + _notifications.value.filterNot { it.id == event.item.id }
             }
@@ -429,7 +467,7 @@ class MessageRepository @Inject constructor(
 
     private fun onTyping(event: WsEvent.Typing) {
         val uid = event.user.id
-        if (uid == ownUid) return
+        if (uid == ownUid || uid in _blockedUsers.value) return
         if (event.typing) {
             _typingUsers.value = _typingUsers.value.filterNot { it.id == uid } + event.user
             typingClearJobs.remove(uid)?.cancel()
@@ -474,5 +512,6 @@ class MessageRepository @Inject constructor(
         const val MAX_CATCHUP_PAGES = 5
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
         const val PREF_FAVORITES = "sticker_favorites"
+        const val PREF_BLOCKED = "blocked_users"
     }
 }

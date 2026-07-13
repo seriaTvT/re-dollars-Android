@@ -62,6 +62,8 @@ class ChatViewModel @Inject constructor(
     val notifications: StateFlow<List<NotificationItem>> = repo.notifications
     /** Saved sticker image URLs (favorites tab in the smiley picker). */
     val favorites: StateFlow<List<String>> = repo.favorites
+    /** App-local blocklist; blocked users vanish from list/typing/notifications. */
+    val blockedUsers: StateFlow<Set<Long>> = repo.blockedUsers
     /** uids currently online among recently-visible authors (presence dots). */
     val onlineUsers: StateFlow<Set<Long>> = repo.onlineUsers
 
@@ -492,6 +494,13 @@ class ChatViewModel @Inject constructor(
 
     /** Resolve a profile for the profile sheet (backend user cache). */
     suspend fun loadProfile(uid: Long) = repo.fetchUserProfile(uid)
+
+    /** Block/unblock from the profile sheet. */
+    fun toggleBlock(uid: Long) {
+        val nowBlocked = uid !in repo.blockedUsers.value
+        repo.setBlocked(uid, nowBlocked)
+        sendStatus = if (nowBlocked) "已屏蔽该用户" else "已取消屏蔽"
+    }
 
     /** Full-text search page (search sheet). */
     suspend fun searchMessages(query: String, offset: Int) = repo.searchMessages(query, offset)

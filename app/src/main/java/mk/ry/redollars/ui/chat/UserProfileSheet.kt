@@ -18,6 +18,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -46,6 +47,9 @@ private fun isoToMillis(iso: String?): Long? =
 fun UserProfileSheet(
     uid: Long,
     online: Boolean,
+    blocked: Boolean,
+    canBlock: Boolean,
+    onToggleBlock: () -> Unit,
     loadProfile: suspend (Long) -> UserProfileDto?,
     onDismiss: () -> Unit,
 ) {
@@ -125,13 +129,26 @@ fun UserProfileSheet(
                 }
             }
 
-            FilledTonalButton(
-                onClick = {
-                    val path = p.url?.takeIf { it.isNotBlank() } ?: "/user/${p.username.ifBlank { uid.toString() }}"
-                    uriHandler.openUri(Config.BGM_HOST + path)
-                },
-                modifier = Modifier.padding(top = 16.dp),
-            ) { Text("在 Bangumi 查看") }
+            Row(
+                Modifier.padding(top = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                FilledTonalButton(
+                    onClick = {
+                        val path = p.url?.takeIf { it.isNotBlank() }
+                            ?: "/user/${p.username.ifBlank { uid.toString() }}"
+                        uriHandler.openUri(Config.BGM_HOST + path)
+                    },
+                ) { Text("在 Bangumi 查看") }
+                if (canBlock) {
+                    OutlinedButton(onClick = onToggleBlock) {
+                        Text(
+                            text = if (blocked) "取消屏蔽" else "屏蔽",
+                            color = if (blocked) cs.primary else cs.error,
+                        )
+                    }
+                }
+            }
 
             Spacer(Modifier.height(16.dp))
         }
