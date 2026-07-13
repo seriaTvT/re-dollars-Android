@@ -220,6 +220,18 @@ data class UserProfileDto(
     val username: String = "",
     val nickname: String = "",
     val avatar: UserAvatarDto? = null,
+    val sign: String? = null,
+    val url: String? = null,
+    val stats: UserStatsDto? = null,
+)
+
+/** Chat-activity stats attached to /users/:id. Times are ISO-8601 strings. */
+@Serializable
+data class UserStatsDto(
+    @SerialName("message_count") val messageCount: Long = 0,
+    @SerialName("average_messages_per_day") val averagePerDay: Double = 0.0,
+    @SerialName("first_message_time") val firstMessageTime: String? = null,
+    @SerialName("last_message_time") val lastMessageTime: String? = null,
 )
 
 @Serializable
@@ -227,4 +239,55 @@ data class UserAvatarDto(
     val large: String? = null,
     val medium: String? = null,
     val small: String? = null,
+)
+
+/** GET /search?q= — full-text message search; results are enriched messages. */
+@Serializable
+data class SearchResponse(
+    val status: Boolean = false,
+    val results: List<MessageDto> = emptyList(),
+)
+
+/** GET /gallery — media wall of images/videos posted in chat. */
+@Serializable
+data class GalleryResponse(
+    val status: Boolean = false,
+    val items: List<GalleryItemDto> = emptyList(),
+    val hasMore: Boolean = false,
+    val total: Long = 0,
+)
+
+@Serializable
+data class GalleryItemDto(
+    val url: String = "",
+    val thumbnailUrl: String? = null,
+    val type: String = "image",
+    @SerialName("message_id") @Serializable(with = FlexLongSerializer::class) val messageId: Long = 0,
+    @Serializable(with = FlexLongSerializer::class) val timestamp: Long = 0,
+    @Serializable(with = FlexLongSerializer::class) val uid: Long = 0,
+    val nickname: String = "",
+    val avatar: String = "",
+)
+
+/** GET /favorites?uid= — saved sticker image URLs (favorites.ts). */
+@Serializable
+data class FavoritesResponse(
+    val status: Boolean = false,
+    val data: List<String> = emptyList(),
+)
+
+/** GET /users/search — mention autocomplete. username is the login slug (often the
+ *  numeric uid for users who never set one); nickname is the display name. */
+@Serializable
+data class UserSearchResponse(
+    val status: Boolean = false,
+    val data: List<UserSearchDto> = emptyList(),
+)
+
+@Serializable
+data class UserSearchDto(
+    @Serializable(with = FlexLongSerializer::class) val id: Long = 0,
+    val username: String = "",
+    val nickname: String = "",
+    @SerialName("avatar_url") val avatarUrl: String? = null,
 )

@@ -1,8 +1,13 @@
 package mk.ry.redollars
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import dagger.hilt.android.AndroidEntryPoint
 import android.webkit.WebView
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -27,22 +32,55 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.hilt.navigation.compose.hiltViewModel
+import javax.inject.Inject
+import mk.ry.redollars.bmo.BmoRenderer
+import mk.ry.redollars.bmo.LocalBmoRenderer
+import mk.ry.redollars.data.MessageRepository
+import mk.ry.redollars.push.RedollarsMessagingService
 import mk.ry.redollars.ui.chat.ChatScreen
 import mk.ry.redollars.ui.chat.Lightbox
+import mk.ry.redollars.ui.render.AudioPlayer
+import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.LocalImageViewer
 import mk.ry.redollars.ui.theme.RedollarsTheme
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+    @Inject lateinit var bmoRenderer: BmoRenderer
+    @Inject lateinit var audioPlayer: AudioPlayer
+    @Inject lateinit var repo: MessageRepository
+
+    private val notificationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent { RedollarsApp() }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        consumeJumpIntent(intent)
+        setContent { RedollarsApp(bmoRenderer, audioPlayer) }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        consumeJumpIntent(intent)
+    }
+
+    private fun consumeJumpIntent(intent: Intent?) {
+        val id = intent?.getLongExtra(RedollarsMessagingService.EXTRA_JUMP_MESSAGE_ID, 0L) ?: 0L
+        if (id > 0) {
+            repo.pushJumpRequests.value = id
+            intent?.removeExtra(RedollarsMessagingService.EXTRA_JUMP_MESSAGE_ID)
+        }
     }
 }
 
 @Composable
-private fun RedollarsApp() {
+private fun RedollarsApp(bmoRenderer: BmoRenderer, audioPlayer: AudioPlayer) {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val vm: ChatViewModel = hiltViewModel()
@@ -60,7 +98,11 @@ private fun RedollarsApp() {
                 vm.oauthRequestUrl?.let { webView?.loadUrl(it) }
             }
 
-            CompositionLocalProvider(LocalImageViewer provides { url -> lightboxUrl = url }) {
+            CompositionLocalProvider(
+                LocalImageViewer provides { url -> lightboxUrl = url },
+                LocalBmoRenderer provides bmoRenderer,
+                LocalAudioPlayer provides audioPlayer,
+            ) {
                 Box(Modifier.fillMaxSize()) {
                     if (!vm.showLogin) {
                         ChatScreen(
@@ -109,7 +151,11 @@ private fun RedollarsApp() {
             }
 
             lightboxUrl?.let { url ->
-                Lightbox(url = url, onDismiss = { lightboxUrl = null })
+                Lightbox(
+                    url = url,
+                    onDismiss = { lightboxUrl = null },
+                    onSaveSticker = { vm.addFavorite(url) },
+                )
             }
         }
     }

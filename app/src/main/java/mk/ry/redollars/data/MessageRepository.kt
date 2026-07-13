@@ -8,8 +8,11 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -23,8 +26,15 @@ import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
+import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.GalleryResponse
 import mk.ry.redollars.net.RestApi
+import mk.ry.redollars.net.UploadApi
+import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserProfileDto
+import mk.ry.redollars.net.UserSearchDto
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
@@ -48,14 +58,52 @@ class MessageRepository @Inject constructor(
 ) {
     private val rest = RestApi(http)
     private val ws = DollarsWs(http, scope, ::onWsEvent)
+    private val uploads = UploadApi(http)
 
     /** How many of the newest cached rows the UI shows; grows as the user pages up. */
     private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
 
+    // ---- Blocked users: app-local list; Room keeps the rows, display filters them ----
+    // (The web mirrors Bangumi's data_ignore_users; here the list is managed in-app.)
+
+    private val blockListSerializer = ListSerializer(Long.serializer())
+
+    private val _blockedUsers = MutableStateFlow(loadBlockedCache())
+    val blockedUsers: StateFlow<Set<Long>> = _blockedUsers.asStateFlow()
+
+    private fun loadBlockedCache(): Set<Long> =
+        prefs.getString(PREF_BLOCKED, null)
+            ?.let { runCatching { AppJson.decodeFromString(blockListSerializer, it) }.getOrNull() }
+            ?.toSet() ?: emptySet()
+
+    fun setBlocked(uid: Long, blocked: Boolean) {
+        val next = if (blocked) _blockedUsers.value + uid else _blockedUsers.value - uid
+        _blockedUsers.value = next
+        prefs.edit()
+            .putString(PREF_BLOCKED, AppJson.encodeToString(blockListSerializer, next.toList()))
+            .apply()
+        if (blocked) {
+            clearTyping(uid)
+            _notifications.value = _notifications.value.filterNot { it.uid == uid }
+        }
+    }
+
     @OptIn(ExperimentalCoroutinesApi::class)
-    val messages: Flow<List<MessageDto>> = displayLimit
-        .flatMapLatest { limit -> dao.observeRecent(limit) }
-        .map { rows -> rows.map { it.toDto() } }
+    val messages: Flow<List<MessageDto>> = kotlinx.coroutines.flow.combine(
+        displayLimit.flatMapLatest { limit -> dao.observeRecent(limit) },
+        _blockedUsers,
+    ) { rows, blocked ->
+        rows.mapNotNull { row ->
+            val dto = row.toDto()
+            val quoted = dto.replyDetails
+            when {
+                dto.uid in blocked -> null // hidden entirely
+                quoted != null && quoted.uid in blocked ->
+                    dto.copy(replyDetails = quoted.copy(content = "[已屏蔽]", firstImage = null))
+                else -> dto
+            }
+        }
+    }
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -91,10 +139,97 @@ class MessageRepository @Inject constructor(
     suspend fun fetchUserProfile(uid: Long): UserProfileDto? =
         runCatching { rest.getUser(uid) }.getOrNull()
 
+    /** Mention autocomplete: users whose nickname/username matches [query]. */
+    suspend fun searchUsers(query: String): List<UserSearchDto> =
+        runCatching { rest.searchUsers(query) }.getOrDefault(emptyList())
+
+    /** Full-text message search (newest first). */
+    suspend fun searchMessages(query: String, offset: Int): List<MessageDto> =
+        runCatching { rest.searchMessages(query, offset) }.getOrDefault(emptyList())
+
+    /** One page of the chat media wall. */
+    suspend fun fetchGallery(offset: Int): GalleryResponse? =
+        runCatching { rest.fetchGallery(offset) }.getOrNull()
+
+    // ---- Sticker favorites (favorites.ts): image URLs, local cache + backend sync ----
+
+    private val favListSerializer = ListSerializer(String.serializer())
+
+    private val _favorites = MutableStateFlow(loadFavoritesCache())
+    val favorites: StateFlow<List<String>> = _favorites.asStateFlow()
+
+    private fun loadFavoritesCache(): List<String> =
+        prefs.getString(PREF_FAVORITES, null)
+            ?.let { runCatching { AppJson.decodeFromString(favListSerializer, it) }.getOrNull() }
+            ?: emptyList()
+
+    private fun persistFavorites(list: List<String>) {
+        _favorites.value = list
+        prefs.edit().putString(PREF_FAVORITES, AppJson.encodeToString(favListSerializer, list)).apply()
+    }
+
+    /** Union the backend's list with local additions (favorites.ts sync semantics). */
+    suspend fun syncFavorites() {
+        if (ownUid <= 0) return
+        val server = runCatching { rest.fetchFavorites(ownUid) }.getOrNull() ?: return
+        val merged = (server + _favorites.value).distinct()
+        if (merged != _favorites.value) persistFavorites(merged)
+    }
+
+    /** Local-first; the backend write is fire-and-forget like the web's. */
+    suspend fun addFavorite(url: String) {
+        if (url.isBlank() || url in _favorites.value) return
+        persistFavorites(listOf(url) + _favorites.value)
+        if (ownUid > 0) runCatching { rest.addFavorite(ownUid, url) }
+    }
+
+    suspend fun removeFavorite(url: String) {
+        persistFavorites(_favorites.value - url)
+        if (ownUid > 0) runCatching { rest.removeFavorite(ownUid, url) }
+    }
+
+    /** Only real JWTs go to the upload server: legacy opaque dollars_auth tokens get
+     *  rejected as an invalid bearer, while no header at all is accepted
+     *  (getUploadAuthHeaders in the userscript). */
+    private val jwtPattern = Regex("""^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$""")
+
+    /** Upload an image to the upload server. */
+    suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String): UploadResult =
+        uploads.uploadImage(bytes, fileName, mime, authToken?.takeIf { jwtPattern.matches(it) })
+
+    /** Upload any non-image file (voice, video, documents) — no auth needed. */
+    suspend fun uploadFile(bytes: ByteArray, fileName: String, mime: String): UploadResult =
+        uploads.uploadFile(bytes, fileName, mime)
+
+    // ---- Presence dots (presenceHandlers.ts): track authors in the visible window ----
+
+    private val _onlineUsers = MutableStateFlow<Set<Long>>(emptySet())
+    val onlineUsers: StateFlow<Set<Long>> = _onlineUsers.asStateFlow()
+
+    private var presenceSubscribed = setOf<Long>()
+
+    /** Diff-subscribe to [want]; the server then answers a query and pushes updates. */
+    private fun syncPresence(want: Set<Long>) {
+        val added = want - presenceSubscribed
+        val removed = presenceSubscribed - want
+        ws.sendPresenceUnsubscribe(removed)
+        ws.sendPresenceSubscribe(added)
+        presenceSubscribed = want
+        if (removed.isNotEmpty()) _onlineUsers.value = _onlineUsers.value - removed
+    }
+
+    /** A fresh socket has no server-side subscription state; replay ours. */
+    private fun resubscribePresence() {
+        val want = presenceSubscribed
+        presenceSubscribed = emptySet()
+        _onlineUsers.value = emptySet()
+        syncPresence(want)
+    }
+
     suspend fun refreshNotifications() {
         if (ownUid <= 0) return
         val list = runCatching { rest.fetchNotifications(ownUid) }.getOrDefault(emptyList())
-        _notifications.value = list
+        _notifications.value = list.filterNot { it.uid in _blockedUsers.value }
     }
 
     suspend fun markNotificationRead(id: Long) {
@@ -127,6 +262,19 @@ class MessageRepository @Inject constructor(
         // Distinguish "backend said no" from network failure: only drop on a real no.
         if (user != null) setAuthToken(null)
         return false
+    }
+
+    // ---- FCM push ----
+
+    /** Jump target set by MainActivity when a push notification is tapped. */
+    val pushJumpRequests = MutableStateFlow<Long?>(null)
+
+    /** Bind our FCM registration token to this account on the backend. No-op until
+     *  the OAuth token exists; called again on every auth-ready and token rotation. */
+    suspend fun registerPushToken(fcmToken: String) {
+        val token = authToken ?: return
+        val ok = runCatching { rest.registerPush(fcmToken, token) }.getOrDefault(false)
+        log(if (ok) "Push token registered" else "Push token registration failed")
     }
 
     /** Edit own message; Room is patched immediately, the WS echo re-enriches it. */
@@ -275,9 +423,13 @@ class MessageRepository @Inject constructor(
             is WsEvent.Status -> {
                 _connected.value = event.connected
                 // Every (re)connect catches up via since_db_id; WS delivery is best-effort.
-                if (event.connected) scope.launch {
-                    syncNewer()
-                    refreshNotifications()
+                if (event.connected) {
+                    resubscribePresence()
+                    scope.launch {
+                        syncNewer()
+                        refreshNotifications()
+                        syncFavorites()
+                    }
                 }
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
@@ -300,8 +452,14 @@ class MessageRepository @Inject constructor(
                 }
             }
             is WsEvent.Notification -> {
+                if (event.item.uid in _blockedUsers.value) return
                 _notifications.value =
                     listOf(event.item) + _notifications.value.filterNot { it.id == event.item.id }
+            }
+            is WsEvent.Presence -> {
+                val current = _onlineUsers.value.toMutableSet()
+                for ((id, active) in event.users) if (active) current.add(id) else current.remove(id)
+                _onlineUsers.value = current
             }
             is WsEvent.MessageDeleted -> scope.launch { dao.markDeleted(event.messageId) }
             is WsEvent.MessageEdited -> scope.launch {
@@ -322,7 +480,7 @@ class MessageRepository @Inject constructor(
 
     private fun onTyping(event: WsEvent.Typing) {
         val uid = event.user.id
-        if (uid == ownUid) return
+        if (uid == ownUid || uid in _blockedUsers.value) return
         if (event.typing) {
             _typingUsers.value = _typingUsers.value.filterNot { it.id == uid } + event.user
             typingClearJobs.remove(uid)?.cancel()
@@ -345,6 +503,19 @@ class MessageRepository @Inject constructor(
         _logs.tryEmit(line)
     }
 
+    init {
+        // Presence subscriptions follow the authors of the newest cached messages
+        // (collectUidsForPresence: last 150; PRESENCE_SYNC_DELAY debounce).
+        @OptIn(FlowPreview::class)
+        scope.launch {
+            messages
+                .map { list -> list.takeLast(150).map { it.uid }.toSet() }
+                .distinctUntilChanged()
+                .debounce(120)
+                .collect { want -> syncPresence(want) }
+        }
+    }
+
     private companion object {
         const val INITIAL_WINDOW = 300
         const val PAGE_SIZE = 60
@@ -353,5 +524,7 @@ class MessageRepository @Inject constructor(
         /** Backfill at most this many pages before jumping to the live tail instead. */
         const val MAX_CATCHUP_PAGES = 5
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
+        const val PREF_FAVORITES = "sticker_favorites"
+        const val PREF_BLOCKED = "blocked_users"
     }
 }

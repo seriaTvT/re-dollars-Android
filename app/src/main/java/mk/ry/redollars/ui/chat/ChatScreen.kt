@@ -20,12 +20,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,8 +76,12 @@ fun ChatScreen(
     val messages by vm.messages.collectAsState()
     val typingUsers by vm.typingUsers.collectAsState()
     val notifications by vm.notifications.collectAsState()
+    val favorites by vm.favorites.collectAsState()
+    val onlineUsers by vm.onlineUsers.collectAsState()
     var showDebug by rememberSaveable { mutableStateOf(false) }
     var showNotifications by rememberSaveable { mutableStateOf(false) }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
+    var showGallery by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -84,20 +91,37 @@ fun ChatScreen(
                 notificationCount = notifications.size,
                 debugOn = showDebug,
                 onToggleDebug = { showDebug = !showDebug },
+                onSearch = { showSearch = true },
+                onGallery = { showGallery = true },
                 onNotifications = { showNotifications = true },
                 onAccount = onOpenLogin,
             )
         },
         bottomBar = {
             ChatComposer(
-                text = vm.composerText,
-                onTextChange = vm::onComposerChanged,
+                value = vm.composerValue,
+                onValueChange = vm::onComposerChanged,
                 enabled = vm.session != null,
                 status = vm.sendStatus,
                 replyTo = vm.replyTo,
                 onCancelReply = vm::cancelReply,
                 editing = vm.editing != null,
                 onCancelEdit = vm::cancelEdit,
+                mentionCandidates = vm.mentionCandidates,
+                onPickMention = vm::pickMention,
+                onInsertSmiley = vm::insertSmiley,
+                favorites = favorites,
+                onPickSticker = vm::insertSticker,
+                onUploadFavorite = vm::uploadFavorite,
+                onRemoveFavorite = vm::removeFavorite,
+                onAttachImages = vm::attachImages,
+                onAttachFile = vm::attachFile,
+                recordingVoice = vm.recordingVoice,
+                recordSeconds = vm.recordSeconds,
+                voiceDraft = vm.voiceDraft,
+                onStartVoice = vm::startVoiceRecording,
+                onStopVoice = vm::stopVoiceRecording,
+                onCancelVoice = vm::cancelVoiceRecording,
                 onSend = onSend,
                 onLogin = onOpenLogin,
             )
@@ -111,6 +135,8 @@ fun ChatScreen(
                 messages = messages,
                 ownUid = vm.session?.uid,
                 canModify = vm.authReady,
+                onlineUsers = onlineUsers,
+                onShowProfile = { vm.profileUid = it },
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
                 onReact = vm::toggleReaction,
@@ -124,6 +150,26 @@ fun ChatScreen(
             )
             TypingIndicator(typingUsers)
         }
+    }
+
+    if (showSearch) {
+        SearchSheet(search = vm::searchMessages, onDismiss = { showSearch = false })
+    }
+    if (showGallery) {
+        GallerySheet(fetch = vm::fetchGallery, onDismiss = { showGallery = false })
+    }
+
+    vm.profileUid?.let { uid ->
+        val blockedUsers by vm.blockedUsers.collectAsState()
+        UserProfileSheet(
+            uid = uid,
+            online = uid in onlineUsers,
+            blocked = uid in blockedUsers,
+            canBlock = uid != vm.session?.uid,
+            onToggleBlock = { vm.toggleBlock(uid) },
+            loadProfile = vm::loadProfile,
+            onDismiss = { vm.profileUid = null },
+        )
     }
 
     if (showNotifications) {
@@ -147,6 +193,8 @@ private fun ChatTopBar(
     notificationCount: Int,
     debugOn: Boolean,
     onToggleDebug: () -> Unit,
+    onSearch: () -> Unit,
+    onGallery: () -> Unit,
     onNotifications: () -> Unit,
     onAccount: () -> Unit,
 ) {
@@ -162,6 +210,9 @@ private fun ChatTopBar(
             }
         },
         actions = {
+            IconButton(onClick = onSearch) {
+                Icon(Icons.Filled.Search, contentDescription = "Search")
+            }
             IconButton(onClick = onNotifications) {
                 BadgedBox(
                     badge = {
@@ -173,16 +224,30 @@ private fun ChatTopBar(
                     Icon(Icons.Filled.Notifications, contentDescription = "Notifications")
                 }
             }
-            IconButton(onClick = onToggleDebug) {
-                Icon(
-                    Icons.Filled.Info,
-                    contentDescription = "Debug",
-                    tint = if (debugOn) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             IconButton(onClick = onAccount) {
                 Icon(Icons.Filled.AccountCircle, contentDescription = "Account")
+            }
+            Box {
+                var showMenu by remember { mutableStateOf(false) }
+                IconButton(onClick = { showMenu = true }) {
+                    Icon(Icons.Filled.MoreVert, contentDescription = "More")
+                }
+                DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("图片墙") },
+                        onClick = {
+                            showMenu = false
+                            onGallery()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (debugOn) "隐藏调试信息" else "调试信息") },
+                        onClick = {
+                            showMenu = false
+                            onToggleDebug()
+                        },
+                    )
+                }
             }
         },
     )
@@ -211,6 +276,8 @@ private fun MessageList(
     messages: List<MessageDto>,
     ownUid: Long?,
     canModify: Boolean,
+    onlineUsers: Set<Long>,
+    onShowProfile: (Long) -> Unit,
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
     onReact: (Long, String) -> Unit,
@@ -283,6 +350,20 @@ private fun MessageList(
             .collect { onLoadOlder() }
     }
 
+    // Keep the newest message visible while the viewport shrinks (IME opening, reply
+    // strip appearing…): each shrink re-pins the bottom, so through an IME animation
+    // the last item stays partially visible and atBottom keeps holding.
+    LaunchedEffect(listState) {
+        var lastHeight = 0
+        snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { height ->
+            if (height in 1 until lastHeight && atBottom) {
+                val total = listState.layoutInfo.totalItemsCount
+                if (total > 0) listState.scrollToItem(total - 1)
+            }
+            lastHeight = height
+        }
+    }
+
     Box(modifier.fillMaxSize()) {
         LazyColumn(
             state = listState,
@@ -309,6 +390,8 @@ private fun MessageList(
                     lastInGroup = !groupable(m, next),
                     ownUid = ownUid,
                     canModify = canModify,
+                    online = m.uid in onlineUsers,
+                    onShowProfile = onShowProfile,
                     onReact = { emoji -> onReact(m.id, emoji) },
                     onReply = { onReply(m) },
                     onEdit = { onEdit(m) },

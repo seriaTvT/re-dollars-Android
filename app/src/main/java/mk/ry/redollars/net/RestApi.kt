@@ -132,6 +132,92 @@ class RestApi(private val client: OkHttpClient) {
         client.newCall(req).execute().use { it.isSuccessful }
     }
 
+    /** GET /api/v1/search?q=&offset=&limit= — full-text search, newest first. */
+    suspend fun searchMessages(query: String, offset: Int, limit: Int = 20): List<MessageDto> =
+        withContext(Dispatchers.IO) {
+            val q = java.net.URLEncoder.encode(query, "UTF-8")
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/search?q=$q&offset=$offset&limit=$limit")
+                .header("User-Agent", Config.USER_AGENT)
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
+                runCatching { AppJson.decodeFromString<SearchResponse>(body) }.getOrNull()
+                    ?.takeIf { it.status }?.results ?: emptyList()
+            }
+        }
+
+    /** GET /api/v1/gallery?offset=&limit= — media wall page. */
+    suspend fun fetchGallery(offset: Int, limit: Int = 40): GalleryResponse? =
+        withContext(Dispatchers.IO) {
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/gallery?offset=$offset&limit=$limit")
+                .header("User-Agent", Config.USER_AGENT)
+                .get()
+                .build()
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful || body.isBlank()) return@withContext null
+                runCatching { AppJson.decodeFromString<GalleryResponse>(body) }.getOrNull()
+                    ?.takeIf { it.status }
+            }
+        }
+
+    /** GET /api/v1/favorites?uid= — saved sticker URLs. Null on failure (vs empty list)
+     *  so callers can keep their local cache. */
+    suspend fun fetchFavorites(uid: Long): List<String>? = withContext(Dispatchers.IO) {
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/favorites?uid=$uid")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext null
+            runCatching { AppJson.decodeFromString<FavoritesResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.data
+        }
+    }
+
+    /** POST /api/v1/favorites/add {user_id, image_url} */
+    suspend fun addFavorite(uid: Long, url: String): Boolean = favoritePost("add", uid, url)
+
+    /** POST /api/v1/favorites/remove {user_id, image_url} */
+    suspend fun removeFavorite(uid: Long, url: String): Boolean = favoritePost("remove", uid, url)
+
+    private suspend fun favoritePost(action: String, uid: Long, url: String): Boolean =
+        withContext(Dispatchers.IO) {
+            val payload = AppJson.encodeToString(
+                FavoriteRequest.serializer(),
+                FavoriteRequest(userId = uid, imageUrl = url),
+            )
+            val req = Request.Builder()
+                .url("${Config.BACKEND_API_URL}/favorites/$action")
+                .header("User-Agent", Config.USER_AGENT)
+                .post(payload.toRequestBody(jsonMedia))
+                .build()
+            client.newCall(req).execute().use { it.isSuccessful }
+        }
+
+    /** GET /api/v1/users/search?q=&exact=true&limit= — mention autocomplete (matches
+     *  nickname or username substring; same params as the userscript's completer). */
+    suspend fun searchUsers(query: String, limit: Int = 8): List<UserSearchDto> = withContext(Dispatchers.IO) {
+        val q = java.net.URLEncoder.encode(query, "UTF-8")
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/users/search?q=$q&exact=true&limit=$limit")
+            .header("User-Agent", Config.USER_AGENT)
+            .get()
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
+            runCatching { AppJson.decodeFromString<UserSearchResponse>(body) }.getOrNull()
+                ?.takeIf { it.status }?.data ?: emptyList()
+        }
+    }
+
     /** GET /api/v1/users/:id — resolve the true display nickname + avatar for a uid. */
     suspend fun getUser(uid: Long): UserProfileDto? = withContext(Dispatchers.IO) {
         val req = Request.Builder()
@@ -204,10 +290,34 @@ class RestApi(private val client: OkHttpClient) {
             runCatching { AppJson.decodeFromString<ConfirmResponse>(body) }.getOrNull()
         }
     }
+
+    /** POST /api/v1/push/register {token, platform} — bind our FCM token to this account. */
+    suspend fun registerPush(fcmToken: String, authToken: String): Boolean = withContext(Dispatchers.IO) {
+        val payload = AppJson.encodeToString(
+            PushRegisterRequest.serializer(),
+            PushRegisterRequest(fcmToken, "android"),
+        )
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/push/register")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Authorization", "Bearer $authToken")
+            .post(payload.toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
 }
 
 @kotlinx.serialization.Serializable
+private data class PushRegisterRequest(val token: String, val platform: String)
+
+@kotlinx.serialization.Serializable
 private data class ConfirmRequest(val uid: Long, val message: String)
+
+@kotlinx.serialization.Serializable
+private data class FavoriteRequest(
+    @kotlinx.serialization.SerialName("user_id") val userId: Long,
+    @kotlinx.serialization.SerialName("image_url") val imageUrl: String,
+)
 
 @kotlinx.serialization.Serializable
 private data class EditRequest(val content: String)

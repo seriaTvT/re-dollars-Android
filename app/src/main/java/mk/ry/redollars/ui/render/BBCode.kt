@@ -1,5 +1,6 @@
 package mk.ry.redollars.ui.render
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -7,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,11 +23,17 @@ import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -43,6 +51,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import coil3.compose.AsyncImage
+import mk.ry.redollars.bmo.LocalBmoRenderer
 import mk.ry.redollars.net.ReplyDetails
 
 // ---------------------------------------------------------------------------
@@ -55,6 +64,8 @@ private data class ImageBlock(val urls: List<String>) : Block
 private data class QuoteBlock(val inner: String) : Block
 private data class CodeBlock(val content: String) : Block
 private data class LinkBlock(val label: String, val url: String) : Block
+private data class AudioBlock(val url: String) : Block
+private data class VideoBlock(val url: String) : Block
 
 private val BLOCK_REGEX = Regex(
     "\\[img\\]([\\s\\S]+?)\\[/img\\]" +                        // 1
@@ -92,8 +103,8 @@ private fun parseBlocks(message: String): List<Block> {
             // as a ReplyHeader), so only keep quotes that actually carry text.
             g[3] != null -> if (g[3]!!.value.isNotBlank()) out.add(QuoteBlock(g[3]!!.value))
             g[4] != null -> out.add(CodeBlock(g[4]!!.value))
-            g[5] != null -> out.add(LinkBlock("[视频]", g[5]!!.value.trim()))
-            g[6] != null -> out.add(LinkBlock("[音频]", g[6]!!.value.trim()))
+            g[5] != null -> out.add(VideoBlock(g[5]!!.value.trim()))
+            g[6] != null -> out.add(AudioBlock(g[6]!!.value.trim()))
             g[8] != null -> out.add(LinkBlock(g[7]?.value?.trim().orEmpty().ifEmpty { "[附件]" }, g[8]!!.value.trim()))
         }
     }
@@ -156,6 +167,40 @@ private fun smileyInline(src: String, large: Boolean): InlineTextContent {
     }
 }
 
+/** `[sticker]url[/sticker]` / `[emoji]url[/emoji]`: an arbitrary image rendered big
+ *  (web caps .custom-emoji at 150px); tapping opens the lightbox. */
+private val STICKER_TAG =
+    Regex("""\[(?:emoji|sticker)\](.+?)\[/(?:emoji|sticker)\]""", RegexOption.IGNORE_CASE)
+
+private fun stickerInline(src: String): InlineTextContent =
+    InlineTextContent(Placeholder(6.em, 6.em, PlaceholderVerticalAlign.TextCenter)) {
+        val openViewer = LocalImageViewer.current
+        AsyncImage(
+            model = src,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().clickable { openViewer(src) },
+        )
+    }
+
+/** A compact `(bmoC…)` code composited natively by [LocalBmoRenderer]; the pixel-art
+ *  bitmap is 63×63, drawn unfiltered at smiley size (web shows BMO at 21px). */
+private fun bmoInline(code: String): InlineTextContent =
+    InlineTextContent(Placeholder(1.5.em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
+        val renderer = LocalBmoRenderer.current
+        val bitmap by produceState<ImageBitmap?>(null, code, renderer) {
+            value = renderer?.render(code)
+        }
+        bitmap?.let {
+            Image(
+                bitmap = it,
+                contentDescription = code,
+                filterQuality = FilterQuality.None,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+    }
+
 private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineResult {
     val inline = LinkedHashMap<String, InlineTextContent>()
     val counter = intArrayOf(0)
@@ -185,14 +230,27 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
                 }
                 g[10] != null -> {
                     val raw = g[10]!!.value
+                    val stickerSrc = STICKER_TAG.find(raw)?.groupValues?.get(1)?.trim()
                     val smileySrc = Smilies.urlFor(raw)
-                    if (smileySrc != null) {
-                        val key = "sm${counter[0]++}"
-                        val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
-                        inline[key] = smileyInline(smileySrc, large)
-                        b.appendInlineContent(key, raw)
-                    } else {
-                        appendStyled(b, raw, styles) // bmo / custom emoji fallback
+                    when {
+                        stickerSrc != null && stickerSrc.startsWith("http") -> {
+                            val key = "sm${counter[0]++}"
+                            inline[key] = stickerInline(stickerSrc)
+                            b.appendInlineContent(key, raw)
+                        }
+                        raw.startsWith("(bmoC") -> {
+                            val key = "sm${counter[0]++}"
+                            inline[key] = bmoInline(raw)
+                            b.appendInlineContent(key, raw)
+                        }
+                        smileySrc != null -> {
+                            val key = "sm${counter[0]++}"
+                            val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
+                            inline[key] = smileyInline(smileySrc, large)
+                            b.appendInlineContent(key, raw)
+                        }
+                        // Legacy (bmo_name) codes stay as text.
+                        else -> appendStyled(b, raw, styles)
                     }
                 }
                 g[11] != null -> b.withLink(LinkAnnotation.Url(g[11]!!.value)) {
@@ -215,6 +273,12 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
 @Composable
 fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
     val blocks = remember(message) { parseBlocks(message) }
+    // Only pure-text messages collapse (shouldCollapseMessage: no media/quote/code).
+    val loneText = blocks.singleOrNull() as? TextBlock
+    if (loneText != null) {
+        Column(modifier) { CollapsibleInlineText(loneText.text) }
+        return
+    }
     Column(modifier) {
         blocks.forEach { block ->
             when (block) {
@@ -223,13 +287,19 @@ fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
                 is QuoteBlock -> QuoteView(block.inner)
                 is CodeBlock -> CodeView(block.content)
                 is LinkBlock -> LinkLine(block.label, block.url)
+                is AudioBlock -> AudioBlockView(block.url)
+                is VideoBlock -> VideoBlockView(block.url)
             }
         }
     }
 }
 
 @Composable
-private fun InlineText(text: String) {
+private fun InlineText(
+    text: String,
+    maxLines: Int = Int.MAX_VALUE,
+    onOverflow: (Boolean) -> Unit = {},
+) {
     val cs = MaterialTheme.colorScheme
     val result = remember(text, cs.primary, cs.surfaceVariant) {
         buildInline(text, linkColor = cs.primary, maskBg = cs.surfaceVariant)
@@ -238,7 +308,36 @@ private fun InlineText(text: String) {
         text = result.annotated,
         inlineContent = result.inline,
         style = MaterialTheme.typography.bodyMedium,
+        maxLines = maxLines,
+        onTextLayout = { onOverflow(it.hasVisualOverflow) },
     )
+}
+
+/** Text-only messages collapse past ~15 lines (COLLAPSE_MAX_HEIGHT ≈ 300px on the
+ *  web) with a 展开/收起 toggle; media/quote/code messages never collapse. */
+private const val COLLAPSE_LINES = 15
+
+@Composable
+private fun CollapsibleInlineText(text: String) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    var overflowed by remember(text) { mutableStateOf(false) }
+    Column {
+        InlineText(
+            text = text,
+            maxLines = if (expanded) Int.MAX_VALUE else COLLAPSE_LINES,
+            onOverflow = { if (!expanded) overflowed = it },
+        )
+        if (overflowed || expanded) {
+            Text(
+                text = if (expanded) "收起" else "展开",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                    .clickable { expanded = !expanded }
+                    .padding(top = 4.dp, bottom = 2.dp),
+            )
+        }
+    }
 }
 
 @Composable

@@ -8,6 +8,12 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+// FCM needs the Firebase config the user downloads from the console; keep the
+// build green until app/google-services.json exists.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "mk.ry.redollars"
     compileSdk = 37
@@ -67,6 +73,11 @@ dependencies {
     implementation("io.coil-kt.coil3:coil-network-okhttp:3.5.0")
     implementation("io.coil-kt.coil3:coil-gif:3.5.0")
 
+    // ExoPlayer: the platform VideoView/MediaPlayer stack fails on Cloudflare-fronted
+    // HTTPS/HTTP-2 video; media3 uses a robust HTTP stack + broad codec support.
+    implementation("androidx.media3:media3-exoplayer:1.8.0")
+    implementation("androidx.media3:media3-ui:1.8.0")
+
     implementation("androidx.room:room-runtime:2.8.4")
     implementation("androidx.room:room-ktx:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")
@@ -78,4 +89,8 @@ dependencies {
     // processor classpath until a Hilt release catches up.
     ksp("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.0")
     implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
+
+    implementation(platform("com.google.firebase:firebase-bom:34.4.0"))
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("androidx.lifecycle:lifecycle-process:2.11.0")
 }

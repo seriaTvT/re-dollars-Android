@@ -1,6 +1,15 @@
 package mk.ry.redollars.ui.chat
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -13,14 +22,21 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -28,6 +44,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,11 +54,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import coil3.compose.AsyncImage
+import mk.ry.redollars.VoiceDraft
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.UserSearchDto
+import kotlinx.coroutines.flow.MutableStateFlow
+import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.avatarUrl
 
 /** ~50-char BBCode-stripped preview, mirroring the web reply strip. */
@@ -56,17 +80,43 @@ private fun replyPreview(content: String): String = content
 
 @Composable
 fun ChatComposer(
-    text: String,
-    onTextChange: (String) -> Unit,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
     enabled: Boolean,
     status: String?,
     replyTo: MessageDto?,
     onCancelReply: () -> Unit,
     editing: Boolean,
     onCancelEdit: () -> Unit,
+    mentionCandidates: List<UserSearchDto>,
+    onPickMention: (UserSearchDto) -> Unit,
+    onInsertSmiley: (String) -> Unit,
+    favorites: List<String>,
+    onPickSticker: (String) -> Unit,
+    onUploadFavorite: (Uri) -> Unit,
+    onRemoveFavorite: (String) -> Unit,
+    onAttachImages: (List<Uri>) -> Unit,
+    onAttachFile: (Uri) -> Unit,
+    recordingVoice: Boolean,
+    recordSeconds: Int,
+    voiceDraft: VoiceDraft?,
+    onStartVoice: () -> Unit,
+    onStopVoice: () -> Unit,
+    onCancelVoice: () -> Unit,
     onSend: (String) -> Unit,
     onLogin: () -> Unit,
 ) {
+    var showSmilies by rememberSaveable { mutableStateOf(false) }
+    val attachLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9),
+    ) { uris -> if (uris.isNotEmpty()) onAttachImages(uris) }
+    val stickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri -> uri?.let(onUploadFavorite) }
+    val fileLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent(),
+    ) { uri -> uri?.let(onAttachFile) }
+
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding()) {
             if (status != null) {
@@ -76,6 +126,9 @@ fun ChatComposer(
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(start = 16.dp, top = 6.dp),
                 )
+            }
+            if (enabled && mentionCandidates.isNotEmpty()) {
+                MentionSuggestions(mentionCandidates, onPickMention)
             }
             if (editing) {
                 EditStrip(onCancelEdit)
@@ -92,37 +145,290 @@ fun ChatComposer(
                     Text("Log in to chat")
                 }
             } else {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = onTextChange,
-                        modifier = Modifier.weight(1f),
-                        placeholder = {
-                            Text(
-                                when {
-                                    editing -> "Edit message…"
-                                    replyTo != null -> "Reply…"
-                                    else -> "Message…"
-                                },
-                            )
-                        },
-                        maxLines = 5,
-                        shape = RoundedCornerShape(24.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    FilledIconButton(
-                        onClick = {
-                            val trimmed = text.trim()
-                            if (trimmed.isNotEmpty()) onSend(trimmed)
-                        },
-                        enabled = text.isNotBlank(),
+                if (voiceDraft != null) {
+                    VoiceStrip(voiceDraft, onCancelVoice)
+                }
+                if (recordingVoice) {
+                    RecordingBar(recordSeconds, onCancelVoice, onStopVoice)
+                } else {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                        IconButton(onClick = { showSmilies = !showSmilies }) {
+                            Icon(
+                                Icons.Filled.Face,
+                                contentDescription = "Smilies",
+                                tint = if (showSmilies) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Box {
+                            var showAttach by remember { mutableStateOf(false) }
+                            IconButton(onClick = { showAttach = true }) {
+                                Icon(
+                                    Icons.Filled.Add,
+                                    contentDescription = "Attach",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showAttach,
+                                onDismissRequest = { showAttach = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("图片") },
+                                    onClick = {
+                                        showAttach = false
+                                        attachLauncher.launch(
+                                            PickVisualMediaRequest(
+                                                ActivityResultContracts.PickVisualMedia.ImageOnly,
+                                            ),
+                                        )
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("视频 / 文件") },
+                                    onClick = {
+                                        showAttach = false
+                                        fileLauncher.launch("*/*")
+                                    },
+                                )
+                            }
+                        }
+                        OutlinedTextField(
+                            value = value,
+                            onValueChange = onValueChange,
+                            modifier = Modifier.weight(1f),
+                            placeholder = {
+                                Text(
+                                    when {
+                                        editing -> "Edit message…"
+                                        replyTo != null -> "Reply…"
+                                        else -> "Message…"
+                                    },
+                                )
+                            },
+                            maxLines = 5,
+                            shape = RoundedCornerShape(24.dp),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        // Telegram-style swap: mic when there's nothing to send yet.
+                        if (value.text.isBlank() && voiceDraft == null && !editing) {
+                            val context = LocalContext.current
+                            val micPermission = rememberLauncherForActivityResult(
+                                ActivityResultContracts.RequestPermission(),
+                            ) { granted -> if (granted) onStartVoice() }
+                            FilledIconButton(
+                                onClick = {
+                                    if (ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO,
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        onStartVoice()
+                                    } else {
+                                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                },
+                            ) {
+                                Text("🎤")
+                            }
+                        } else {
+                            FilledIconButton(
+                                onClick = {
+                                    val trimmed = value.text.trim()
+                                    if (trimmed.isNotEmpty() || voiceDraft?.url != null) {
+                                        showSmilies = false
+                                        onSend(trimmed)
+                                    }
+                                },
+                                enabled = value.text.isNotBlank() || voiceDraft?.url != null,
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
+                            }
+                        }
                     }
                 }
+                AnimatedVisibility(visible = showSmilies) {
+                    SmileyPicker(
+                        onPick = { code ->
+                            onInsertSmiley(code)
+                            showSmilies = false // SmileyPanel.tsx closes on select
+                        },
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        columns = GridCells.Adaptive(minSize = 44.dp),
+                        gridHeight = 240.dp,
+                        favorites = favorites,
+                        onPickSticker = { url ->
+                            onPickSticker(url)
+                            showSmilies = false
+                        },
+                        onUploadFavorite = {
+                            stickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                            )
+                        },
+                        onRemoveFavorite = onRemoveFavorite,
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun formatVoiceSeconds(seconds: Int): String =
+    "%d:%02d".format(seconds / 60, seconds % 60)
+
+/** Live recording state: pulsating-red timer, cancel, and a stop button. */
+@Composable
+private fun RecordingBar(seconds: Int, onCancel: () -> Unit, onStop: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(
+            Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(cs.error),
+        )
+        Text(
+            text = "Recording… ${formatVoiceSeconds(seconds)}",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(start = 8.dp).weight(1f),
+        )
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cancel recording",
+                tint = cs.onSurfaceVariant,
+            )
+        }
+        FilledIconButton(onClick = onStop) {
+            Spacer(
+                Modifier
+                    .size(12.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(cs.onPrimary),
+            )
+        }
+    }
+}
+
+/** Recorded clip awaiting send: play/pause preview, upload status, cancel. */
+@Composable
+private fun VoiceStrip(draft: VoiceDraft, onCancel: () -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    val player = LocalAudioPlayer.current
+    val nowPlaying by (player?.nowPlaying ?: MutableStateFlow(null)).collectAsState()
+    val source = draft.file.absolutePath
+    val playing = nowPlaying == source
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(cs.surfaceContainerHigh)
+            .height(IntrinsicSize.Min),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(Modifier.width(3.dp).fillMaxHeight().background(cs.secondary)) {}
+        FilledTonalIconButton(
+            onClick = { player?.toggle(source) },
+            modifier = Modifier.padding(start = 8.dp).size(30.dp),
+        ) {
+            if (playing) {
+                Spacer(
+                    Modifier
+                        .size(9.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(cs.primary),
+                )
+            } else {
+                Icon(
+                    Icons.Filled.PlayArrow,
+                    contentDescription = "Play recording",
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Column(Modifier.weight(1f).padding(horizontal = 8.dp, vertical = 6.dp)) {
+            Text(
+                text = "Voice message · ${formatVoiceSeconds(draft.durationSec)}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = cs.secondary,
+            )
+            Text(
+                text = when {
+                    draft.url != null -> "Ready to send"
+                    draft.error != null -> "Upload failed: ${draft.error}"
+                    else -> "Uploading…"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (draft.error != null) cs.error else cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Discard recording",
+                tint = cs.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
+}
+
+/** Users matching the `@query` at the cursor; tapping one completes the mention. */
+@Composable
+private fun MentionSuggestions(
+    candidates: List<UserSearchDto>,
+    onPick: (UserSearchDto) -> Unit,
+) {
+    val cs = MaterialTheme.colorScheme
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp)
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(cs.surfaceContainerHigh),
+    ) {
+        candidates.take(6).forEach { user ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable { onPick(user) }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AsyncImage(
+                    model = avatarUrl(user.avatarUrl, 'm'),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(28.dp).clip(CircleShape),
+                )
+                Text(
+                    text = user.nickname.ifBlank { user.username },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+                Text(
+                    text = "@${user.username}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = cs.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = 6.dp),
+                )
             }
         }
     }
