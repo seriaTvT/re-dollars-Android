@@ -8,6 +8,12 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
+// FCM needs the Firebase config the user downloads from the console; keep the
+// build green until app/google-services.json exists.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 android {
     namespace = "mk.ry.redollars"
     compileSdk = 37
@@ -78,4 +84,8 @@ dependencies {
     // processor classpath until a Hilt release catches up.
     ksp("org.jetbrains.kotlin:kotlin-metadata-jvm:2.4.0")
     implementation("androidx.hilt:hilt-navigation-compose:1.4.0")
+
+    implementation(platform("com.google.firebase:firebase-bom:34.4.0"))
+    implementation("com.google.firebase:firebase-messaging")
+    implementation("androidx.lifecycle:lifecycle-process:2.11.0")
 }

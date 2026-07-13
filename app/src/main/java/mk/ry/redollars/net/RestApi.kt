@@ -290,7 +290,25 @@ class RestApi(private val client: OkHttpClient) {
             runCatching { AppJson.decodeFromString<ConfirmResponse>(body) }.getOrNull()
         }
     }
+
+    /** POST /api/v1/push/register {token, platform} — bind our FCM token to this account. */
+    suspend fun registerPush(fcmToken: String, authToken: String): Boolean = withContext(Dispatchers.IO) {
+        val payload = AppJson.encodeToString(
+            PushRegisterRequest.serializer(),
+            PushRegisterRequest(fcmToken, "android"),
+        )
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/push/register")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Authorization", "Bearer $authToken")
+            .post(payload.toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { it.isSuccessful }
+    }
 }
+
+@kotlinx.serialization.Serializable
+private data class PushRegisterRequest(val token: String, val platform: String)
 
 @kotlinx.serialization.Serializable
 private data class ConfirmRequest(val uid: Long, val message: String)

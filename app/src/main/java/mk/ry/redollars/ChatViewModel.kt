@@ -101,6 +101,24 @@ class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { repo.logs.collect { log(it) } }
+        viewModelScope.launch {
+            repo.pushJumpRequests.collect { id ->
+                if (id != null) {
+                    pendingJumpId = id
+                    repo.pushJumpRequests.value = null
+                }
+            }
+        }
+    }
+
+    /** Bind our FCM token to this account once the backend Bearer token is ready.
+     *  Silently a no-op when Firebase isn't configured (no google-services.json). */
+    private fun registerPush() {
+        if (com.google.firebase.FirebaseApp.getApps(appContext).isEmpty()) return
+        com.google.firebase.messaging.FirebaseMessaging.getInstance().token
+            .addOnSuccessListener { token ->
+                viewModelScope.launch { repo.registerPushToken(token) }
+            }
     }
 
     fun start() {
@@ -131,6 +149,7 @@ class ChatViewModel @Inject constructor(
                 authReady = true
                 showLogin = false
                 log("Backend auth ready (stored token)")
+                registerPush()
             } else {
                 oauthRequestUrl = mk.ry.redollars.net.Config.oauthAuthorizeUrl()
                 log("Requesting backend OAuth authorization…")
@@ -146,6 +165,7 @@ class ChatViewModel @Inject constructor(
             authReady = repo.validateAuthToken(session?.uid ?: 0)
             showLogin = false
             log("Backend auth ${if (authReady) "ready (new token)" else "validation FAILED"}")
+            if (authReady) registerPush()
         }
     }
 
