@@ -30,7 +30,6 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -53,6 +52,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +72,46 @@ import mk.ry.redollars.net.UserSearchDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.avatarUrl
+
+/** The web app's emoji-panel glyph (styles/index.css --dollars-icon-emoji): a tray
+ *  with a chevron dropping in, Tabler-stroke style. Stroke color is a placeholder —
+ *  Icon's tint recolors it. */
+private val EmojiPanelIcon: ImageVector by lazy(LazyThreadSafetyMode.NONE) {
+    ImageVector.Builder(
+        name = "EmojiPanel",
+        defaultWidth = 24.dp,
+        defaultHeight = 24.dp,
+        viewportWidth = 24f,
+        viewportHeight = 24f,
+    ).apply {
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(3f, 9f)
+            arcToRelative(2f, 2f, 0f, false, true, 2f, -2f)
+            horizontalLineToRelative(14f)
+            arcToRelative(2f, 2f, 0f, false, true, 2f, 2f)
+            verticalLineToRelative(9f)
+            arcToRelative(2f, 2f, 0f, false, true, -2f, 2f)
+            horizontalLineToRelative(-14f)
+            arcToRelative(2f, 2f, 0f, false, true, -2f, -2f)
+            close()
+        }
+        path(
+            stroke = SolidColor(Color.Black),
+            strokeLineWidth = 2f,
+            strokeLineCap = StrokeCap.Round,
+            strokeLineJoin = StrokeJoin.Round,
+        ) {
+            moveTo(16f, 3f)
+            lineToRelative(-4f, 4f)
+            lineToRelative(-4f, -4f)
+        }
+    }.build()
+}
 
 /** ~50-char BBCode-stripped preview, mirroring the web reply strip. */
 private fun replyPreview(content: String): String = content
@@ -107,6 +152,19 @@ fun ChatComposer(
     onLogin: () -> Unit,
 ) {
     var showSmilies by rememberSaveable { mutableStateOf(false) }
+    val context = LocalContext.current
+    val micPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted -> if (granted) onStartVoice() }
+    val startVoiceChecked = {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            onStartVoice()
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     val attachLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9),
     ) { uris -> if (uris.isNotEmpty()) onAttachImages(uris) }
@@ -157,7 +215,7 @@ fun ChatComposer(
                     ) {
                         IconButton(onClick = { showSmilies = !showSmilies }) {
                             Icon(
-                                Icons.Filled.Face,
+                                EmojiPanelIcon,
                                 contentDescription = "Smilies",
                                 tint = if (showSmilies) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -194,6 +252,13 @@ fun ChatComposer(
                                         fileLauncher.launch("*/*")
                                     },
                                 )
+                                DropdownMenuItem(
+                                    text = { Text("语音消息") },
+                                    onClick = {
+                                        showAttach = false
+                                        startVoiceChecked()
+                                    },
+                                )
                             }
                         }
                         OutlinedTextField(
@@ -213,40 +278,17 @@ fun ChatComposer(
                             shape = RoundedCornerShape(24.dp),
                         )
                         Spacer(Modifier.width(8.dp))
-                        // Telegram-style swap: mic when there's nothing to send yet.
-                        if (value.text.isBlank() && voiceDraft == null && !editing) {
-                            val context = LocalContext.current
-                            val micPermission = rememberLauncherForActivityResult(
-                                ActivityResultContracts.RequestPermission(),
-                            ) { granted -> if (granted) onStartVoice() }
-                            FilledIconButton(
-                                onClick = {
-                                    if (ContextCompat.checkSelfPermission(
-                                            context,
-                                            Manifest.permission.RECORD_AUDIO,
-                                        ) == PackageManager.PERMISSION_GRANTED
-                                    ) {
-                                        onStartVoice()
-                                    } else {
-                                        micPermission.launch(Manifest.permission.RECORD_AUDIO)
-                                    }
-                                },
-                            ) {
-                                Text("🎤")
-                            }
-                        } else {
-                            FilledIconButton(
-                                onClick = {
-                                    val trimmed = value.text.trim()
-                                    if (trimmed.isNotEmpty() || voiceDraft?.url != null) {
-                                        showSmilies = false
-                                        onSend(trimmed)
-                                    }
-                                },
-                                enabled = value.text.isNotBlank() || voiceDraft?.url != null,
-                            ) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
-                            }
+                        FilledIconButton(
+                            onClick = {
+                                val trimmed = value.text.trim()
+                                if (trimmed.isNotEmpty() || voiceDraft?.url != null) {
+                                    showSmilies = false
+                                    onSend(trimmed)
+                                }
+                            },
+                            enabled = value.text.isNotBlank() || voiceDraft?.url != null,
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                         }
                     }
                 }
