@@ -1,7 +1,12 @@
 package mk.ry.redollars.ui.render
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.util.LruCache
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -29,11 +34,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,11 +58,16 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import mk.ry.redollars.net.Config
+import java.io.File
 
 /**
- * Inline `[video]url[/video]` player. The chat list stays a light poster card (a play
- * badge + host label); tapping opens a fullscreen dialog that plays the clip with
+ * Inline `[video]url[/video]` player. The chat list shows a poster: the clip's first
+ * frame with a play badge and duration (fetched via MediaMetadataRetriever range
+ * requests, cached in memory and on disk), or a light host-label card until/unless a
+ * frame is available. Tapping opens a fullscreen dialog that plays the clip with
  * ExoPlayer. The platform VideoView/MediaPlayer stack silently failed on the
  * Cloudflare-fronted mp4s (play→pause flicker, no duration), so we use media3 with a
  * browser-UA HTTP data source — matching what the web's `<video>` does — and surface any
@@ -62,38 +77,132 @@ import mk.ry.redollars.net.Config
 fun VideoBlockView(url: String) {
     var open by remember(url) { mutableStateOf(false) }
     val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
     val host = remember(url) {
         runCatching { Uri.parse(url).host }.getOrNull()?.removePrefix("www.") ?: "视频"
     }
 
-    Row(
-        Modifier
-            .padding(vertical = 4.dp)
-            .widthIn(max = 320.dp)
-            .clickable { open = true }
-            .background(cs.surfaceVariant, RoundedCornerShape(10.dp))
-            .border(1.dp, cs.outlineVariant, RoundedCornerShape(10.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier.size(36.dp).background(cs.primary, RoundedCornerShape(50)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Default.PlayArrow, contentDescription = "播放视频", tint = cs.onPrimary)
+    val meta by produceState(metaCache.get(url), url) {
+        if (value == null) {
+            val dir = File(ctx.cacheDir, "vthumb").apply { mkdirs() }
+            value = withContext(Dispatchers.IO) { loadVideoMeta(dir, url) }
+                ?.also { metaCache.put(url, it) }
         }
-        Text(
-            text = "视频 · $host",
-            style = MaterialTheme.typography.bodyMedium,
-            color = cs.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.padding(start = 12.dp),
-        )
+    }
+
+    val m = meta
+    if (m != null) {
+        val ratio = if (m.frame.height > 0) m.frame.width.toFloat() / m.frame.height else 16f / 9f
+        Box(
+            Modifier
+                .padding(vertical = 4.dp)
+                .widthIn(max = 320.dp)
+                .aspectRatio(ratio)
+                .clip(RoundedCornerShape(10.dp))
+                .clickable { open = true },
+        ) {
+            Image(
+                bitmap = m.frame,
+                contentDescription = "视频 · $host",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            Box(
+                Modifier
+                    .size(44.dp)
+                    .align(Alignment.Center)
+                    .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(50)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = "播放视频",
+                    tint = Color.White,
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+            if (m.durationMs > 0) {
+                Text(
+                    text = formatDuration(m.durationMs),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(6.dp)
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+    } else {
+        Row(
+            Modifier
+                .padding(vertical = 4.dp)
+                .widthIn(max = 320.dp)
+                .clickable { open = true }
+                .background(cs.surfaceVariant, RoundedCornerShape(10.dp))
+                .border(1.dp, cs.outlineVariant, RoundedCornerShape(10.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier.size(36.dp).background(cs.primary, RoundedCornerShape(50)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = "播放视频", tint = cs.onPrimary)
+            }
+            Text(
+                text = "视频 · $host",
+                style = MaterialTheme.typography.bodyMedium,
+                color = cs.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp),
+            )
+        }
     }
 
     if (open) VideoDialog(url) { open = false }
 }
+
+private class VideoMeta(val frame: ImageBitmap, val durationMs: Long)
+
+private val metaCache = LruCache<String, VideoMeta>(48)
+
+private fun formatDuration(ms: Long): String {
+    val totalSec = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(totalSec / 60, totalSec % 60)
+}
+
+/** First frame + duration for a remote clip, disk-cached as JPEG (+ a `.dur` sidecar)
+ *  so app restarts don't refetch. Null when the host/container defeats the retriever —
+ *  the caller keeps the plain card. */
+private fun loadVideoMeta(dir: File, url: String): VideoMeta? = runCatching {
+    val key = Integer.toHexString(url.hashCode())
+    val jpg = File(dir, "$key.jpg")
+    val dur = File(dir, "$key.dur")
+    if (jpg.exists()) {
+        BitmapFactory.decodeFile(jpg.absolutePath)?.let { cached ->
+            val durationMs = runCatching { dur.readText().toLong() }.getOrDefault(0L)
+            return@runCatching VideoMeta(cached.asImageBitmap(), durationMs)
+        }
+    }
+    val retriever = MediaMetadataRetriever()
+    try {
+        retriever.setDataSource(url, mapOf("User-Agent" to Config.BROWSER_UA))
+        val durationMs = retriever
+            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+            ?.toLongOrNull() ?: 0L
+        val frame = retriever.frameAtTime ?: return@runCatching null
+        runCatching {
+            jpg.outputStream().use { frame.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+            dur.writeText(durationMs.toString())
+        }
+        VideoMeta(frame.asImageBitmap(), durationMs)
+    } finally {
+        runCatching { retriever.release() }
+    }
+}.getOrNull()
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
