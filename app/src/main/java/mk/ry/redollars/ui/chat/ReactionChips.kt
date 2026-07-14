@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import coil3.compose.AsyncImage
+import mk.ry.redollars.bmo.BmoImage
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.ui.render.Smilies
 import mk.ry.redollars.ui.render.avatarUrl
@@ -99,10 +100,13 @@ private fun ReactionChip(group: ReactionGroup, onClick: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val smileySrc = remember(group.emoji) { Smilies.urlFor(group.emoji) }
-                if (smileySrc != null) {
-                    AsyncImage(model = smileySrc, contentDescription = group.emoji, modifier = Modifier.size(17.dp))
-                } else {
-                    Text(group.emoji, fontSize = 13.sp)
+                when {
+                    // Compact BMO codes composite natively (web: <span class="bmo">).
+                    group.emoji.startsWith("(bmoC") ->
+                        BmoImage(group.emoji, Modifier.size(17.dp))
+                    smileySrc != null ->
+                        AsyncImage(model = smileySrc, contentDescription = group.emoji, modifier = Modifier.size(17.dp))
+                    else -> Text(group.emoji, fontSize = 13.sp)
                 }
 
                 if (avatarsToShow.isNotEmpty()) {

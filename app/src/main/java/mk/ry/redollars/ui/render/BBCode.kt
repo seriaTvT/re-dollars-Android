@@ -1,6 +1,5 @@
 package mk.ry.redollars.ui.render
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -25,15 +24,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
@@ -51,7 +47,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import coil3.compose.AsyncImage
-import mk.ry.redollars.bmo.LocalBmoRenderer
+import mk.ry.redollars.bmo.BmoImage
 import mk.ry.redollars.net.ReplyDetails
 
 // ---------------------------------------------------------------------------
@@ -183,22 +179,11 @@ private fun stickerInline(src: String): InlineTextContent =
         )
     }
 
-/** A compact `(bmoC…)` code composited natively by [LocalBmoRenderer]; the pixel-art
- *  bitmap is 63×63, drawn unfiltered at smiley size (web shows BMO at 21px). */
+/** A compact `(bmoC…)` code composited natively; the pixel-art bitmap is 63×63,
+ *  drawn unfiltered at smiley size (web shows BMO at 21px). */
 private fun bmoInline(code: String): InlineTextContent =
     InlineTextContent(Placeholder(1.5.em, 1.5.em, PlaceholderVerticalAlign.TextCenter)) {
-        val renderer = LocalBmoRenderer.current
-        val bitmap by produceState<ImageBitmap?>(null, code, renderer) {
-            value = renderer?.render(code)
-        }
-        bitmap?.let {
-            Image(
-                bitmap = it,
-                contentDescription = code,
-                filterQuality = FilterQuality.None,
-                modifier = Modifier.fillMaxSize(),
-            )
-        }
+        BmoImage(code, Modifier.fillMaxSize())
     }
 
 private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineResult {
