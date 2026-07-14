@@ -6,8 +6,10 @@ object Config {
     const val BACKEND_API_URL = "$BACKEND_URL/api/v1"
     const val WEBSOCKET_URL = "wss://rd.ry.mk/ws"
 
-    /** Bangumi mirror used for login + posting. Cookies are per-domain. */
-    const val BGM_HOST = "https://chii.in"
+    /** Bangumi domain used for login + posting. bangumi.tv connects directly to the
+     *  origin (no Cloudflare), unlike chii.in. Cookies are per-domain, so switching
+     *  hosts requires a fresh login. */
+    const val BGM_HOST = "https://bangumi.tv"
     const val DOLLARS_URL = "$BGM_HOST/dollars"
     const val DOLLARS_POST_URL = "$BGM_HOST/dollars?ajax=1"
 
@@ -35,9 +37,9 @@ object Config {
     const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/0.2"
 
-    /** BMO assets live on the Bangumi site itself, behind Cloudflare, which rejects
-     *  non-browser user agents — fetch them with a desktop browser UA. bgm.tv is used
-     *  (not chii.in) since it passed the UA-only check in testing. */
+    /** BMO assets live on the Bangumi site itself; bgm.tv sits behind Cloudflare,
+     *  which rejects non-browser user agents — fetch them with a desktop browser UA
+     *  (bgm.tv passed the UA-only check in testing). */
     const val BROWSER_UA =
         "Mozilla/5.0 (X11; Linux x86_64; rv:140.0) Gecko/20100101 Firefox/140.0"
     const val BMO_BASE_URL = "https://bgm.tv"
