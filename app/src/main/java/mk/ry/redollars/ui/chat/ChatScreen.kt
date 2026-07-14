@@ -1,6 +1,11 @@
 package mk.ry.redollars.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -58,6 +63,7 @@ import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import mk.ry.redollars.ChatViewModel
 import mk.ry.redollars.net.MessageDto
+import mk.ry.redollars.net.WsUser
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -146,9 +152,9 @@ fun ChatScreen(
                 onJumpTo = { vm.pendingJumpId = it },
                 jumpToId = vm.pendingJumpId,
                 onJumpHandled = { vm.pendingJumpId = null },
+                typingUsers = typingUsers,
                 modifier = Modifier.weight(1f),
             )
-            TypingIndicator(typingUsers)
         }
     }
 
@@ -287,6 +293,7 @@ private fun MessageList(
     onJumpTo: (Long) -> Unit,
     jumpToId: Long?,
     onJumpHandled: () -> Unit,
+    typingUsers: List<WsUser>,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
@@ -299,6 +306,22 @@ private fun MessageList(
             val last = info.visibleItemsInfo.lastOrNull()
             last == null || last.index >= info.totalItemsCount - 1
         }
+    }
+
+    // Whether new messages should keep pinning the list to the bottom. We can't read
+    // `atBottom` when a message arrives: by then the LazyColumn has already re-laid-out
+    // with the new item below the fold, so `atBottom` reads false and the scroll never
+    // fires. Instead we latch intent here — only a user-driven scroll away from the
+    // bottom releases the pin; an append (which never sets isScrollInProgress) keeps it.
+    var stickToBottom by remember { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { atBottom to listState.isScrollInProgress }
+            .collect { (bottom, scrolling) ->
+                when {
+                    bottom -> stickToBottom = true
+                    scrolling -> stickToBottom = false
+                }
+            }
     }
 
     var newCount by remember { mutableStateOf(0) }
@@ -315,7 +338,7 @@ private fun MessageList(
                 initialized = true
             }
             lastId > prevLastId -> {
-                if (atBottom) listState.animateScrollToItem(messages.size - 1)
+                if (stickToBottom) listState.animateScrollToItem(messages.size - 1)
                 else newCount += messages.count { it.id > prevLastId }
             }
         }
@@ -351,12 +374,14 @@ private fun MessageList(
     }
 
     // Keep the newest message visible while the viewport shrinks (IME opening, reply
-    // strip appearing…): each shrink re-pins the bottom, so through an IME animation
-    // the last item stays partially visible and atBottom keeps holding.
+    // strip appearing…): each shrink re-pins the bottom. Gate on the stickToBottom
+    // latch, not atBottom — a large shrink step can push the last item fully off
+    // screen for a frame, which breaks atBottom and used to stall the re-pin midway
+    // through the IME animation, leaving the newest messages behind the keyboard.
     LaunchedEffect(listState) {
         var lastHeight = 0
         snapshotFlow { listState.layoutInfo.viewportSize.height }.collect { height ->
-            if (height in 1 until lastHeight && atBottom) {
+            if (height in 1 until lastHeight && stickToBottom) {
                 val total = listState.layoutInfo.totalItemsCount
                 if (total > 0) listState.scrollToItem(total - 1)
             }
@@ -401,11 +426,25 @@ private fun MessageList(
             }
         }
 
+        // Typing indicator floats over the list (FloatingUI.tsx parity): it must never
+        // resize the LazyColumn viewport, or its appearance shoves the pinned bottom
+        // message up and back down on every keystroke burst.
         AnimatedVisibility(
-            visible = newCount > 0,
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp),
+            visible = typingUsers.isNotEmpty(),
+            modifier = Modifier.align(Alignment.BottomStart).padding(start = 10.dp, bottom = 6.dp),
         ) {
-            NewMessagesPill(newCount) {
+            TypingIndicator(typingUsers)
+        }
+
+        // Telegram-style jump-to-latest button (web #dollars-scroll-bottom-btn): shown
+        // whenever the user is away from the live edge, with the unread count badged.
+        AnimatedVisibility(
+            visible = !atBottom && initialized,
+            enter = fadeIn(tween(150)) + scaleIn(initialScale = 0.8f, animationSpec = tween(150)),
+            exit = fadeOut(tween(120)) + scaleOut(targetScale = 0.8f, animationSpec = tween(120)),
+            modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp),
+        ) {
+            ScrollToBottomButton(newCount) {
                 scope.launch { listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0)) }
                 newCount = 0
             }
@@ -431,21 +470,28 @@ private fun DayDivider(timestampSec: Long) {
 }
 
 @Composable
-private fun NewMessagesPill(count: Int, onClick: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.primary,
-        contentColor = MaterialTheme.colorScheme.onPrimary,
-        shape = RoundedCornerShape(50),
-        shadowElevation = 4.dp,
-        modifier = Modifier.clickable(onClick = onClick),
+private fun ScrollToBottomButton(unread: Int, onClick: () -> Unit) {
+    BadgedBox(
+        badge = {
+            if (unread > 0) {
+                Badge { Text(if (unread > 99) "99+" else "$unread") }
+            }
+        },
     ) {
-        Row(
-            Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            contentColor = MaterialTheme.colorScheme.primary,
+            shape = CircleShape,
+            shadowElevation = 4.dp,
+            modifier = Modifier.size(44.dp).clip(CircleShape).clickable(onClick = onClick),
         ) {
-            Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text("$count new", style = MaterialTheme.typography.labelLarge)
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = "跳转到最新消息",
+                    modifier = Modifier.size(26.dp),
+                )
+            }
         }
     }
 }

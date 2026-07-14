@@ -5,16 +5,18 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -29,7 +31,8 @@ import coil3.compose.AsyncImage
 import mk.ry.redollars.net.WsUser
 import mk.ry.redollars.ui.render.avatarUrl
 
-/** "X is typing…" line shown between the message list and the composer. */
+/** "X is typing…" pill floating over the bottom of the message list (web
+ *  #dollars-typing-indicator parity) — an overlay, so it never resizes the list. */
 @Composable
 fun TypingIndicator(users: List<WsUser>, modifier: Modifier = Modifier) {
     if (users.isEmpty()) return
@@ -38,29 +41,36 @@ fun TypingIndicator(users: List<WsUser>, modifier: Modifier = Modifier) {
         2 -> "${users[0].name} and ${users[1].name} are typing"
         else -> "${users.size} people are typing"
     }
-    Row(
-        modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        modifier = modifier,
     ) {
-        users.take(3).forEach { user ->
-            AsyncImage(
-                model = avatarUrl(user.avatar ?: "", 's'),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.padding(end = 3.dp).size(16.dp).clip(CircleShape),
+        Row(
+            Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            users.take(3).forEach { user ->
+                AsyncImage(
+                    model = avatarUrl(user.avatar ?: "", 's'),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.padding(end = 3.dp).size(16.dp).clip(CircleShape),
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
             )
+            Spacer(Modifier.width(3.dp))
+            PulsingDots()
         }
-        Spacer(Modifier.width(4.dp))
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
-        )
-        Spacer(Modifier.width(3.dp))
-        PulsingDots()
     }
 }
 
