@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark splash background: black in dark mode (light-pink splash lives in the
-         default values/colors.xml). Keeps the cold-start window from flashing white. -->
-    <color name="splash_background">#000000</color>
+    <!-- Dark splash background: a warm near-black (a hint of the brand's rose hue) so the
+         RD logo and backdrop harmonize instead of clashing like pink-on-pure-black.
+         Still reads as black at a glance. Light-pink splash lives in values/colors.xml. -->
+    <color name="splash_background">#140F11</color>
 
     <!-- Dark post-splash window background: a near-black M3 surface so the splash→chat
          handoff stays dark instead of flashing white. -->
     <color name="window_background">#141218</color>
+
+    <!-- Dark-mode RD splash-logo fills: muted rose (desaturated brand pink) so the logo
+         stays legible and calm on the warm near-black splash. Light values in values/. -->
+    <color name="splash_rd_r">#D9BEC2</color>
+    <color name="splash_rd_d">#C09AA0</color>
 </resources>

@@ -8,4 +8,11 @@
          start flashes white between the splash lifting and Compose painting the chat.
          Neutral M3-ish surface tones; the night value lives in values-night/colors.xml. -->
     <color name="window_background">#FFFBFF</color>
+
+    <!-- RD splash-logo fills (R = lighter, D = darker). Light mode = brand pink; the
+         night variant (muted rose, for legibility on the warm near-black splash) lives
+         in values-night/colors.xml. Only the splash uses these; the launcher icon keeps
+         its own pink foreground on the pink adaptive-icon background. -->
+    <color name="splash_rd_r">#E3AEAE</color>
+    <color name="splash_rd_d">#D99A9A</color>
 </resources>
