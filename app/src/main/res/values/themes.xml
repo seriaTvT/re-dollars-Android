@@ -12,7 +12,7 @@
          @color/splash_background resolves to the light/night value automatically. -->
     <style name="Theme.Redollars.Splash" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
-        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_splash</item>
         <item name="postSplashScreenTheme">@style/Theme.Redollars</item>
     </style>
 </resources>

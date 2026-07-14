@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dark splash background: a deep Bangumi-pink so the cold-start window isn't white
-         (or a jarring bright pink) in dark mode. -->
-    <color name="splash_background">#3E001C</color>
+    <!-- Dark splash background: black in dark mode (light-pink splash lives in the
+         default values/colors.xml). Keeps the cold-start window from flashing white. -->
+    <color name="splash_background">#000000</color>
 
     <!-- Dark post-splash window background: a near-black M3 surface so the splash→chat
          handoff stays dark instead of flashing white. -->
