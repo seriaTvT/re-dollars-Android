@@ -1,6 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Compose supplies the real theming (MaterialTheme + dynamic color).
-         The Activity just needs a no-action-bar framework theme. -->
-    <style name="Theme.Redollars" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- Compose supplies the real theming (MaterialTheme + dynamic color). The Activity
+         just needs a no-action-bar framework theme, plus a theme-adaptive windowBackground
+         so the brief splash→Compose handoff never flashes white in dark mode. -->
+    <style name="Theme.Redollars" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_background</item>
+    </style>
+
+    <!-- Launch theme: shown during cold start instead of a blank white window.
+         installSplashScreen() swaps to Theme.Redollars once the first frame is ready.
+         @color/splash_background resolves to the light/night value automatically. -->
+    <style name="Theme.Redollars.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Redollars</item>
+    </style>
 </resources>

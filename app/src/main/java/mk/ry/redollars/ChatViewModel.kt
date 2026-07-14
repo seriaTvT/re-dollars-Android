@@ -53,6 +53,11 @@ class ChatViewModel @Inject constructor(
     @param:ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
+    private val sessionHintPrefs =
+        appContext.getSharedPreferences("session_hint", Context.MODE_PRIVATE)
+    /** True if login completed on a previous launch; drives silent auto-login on open. */
+    val hadPriorSession: Boolean = sessionHintPrefs.getBoolean("had_session", false)
+
     // ---- Observable state from the repository ----
     val messages: StateFlow<List<MessageDto>> =
         repo.messages.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -129,6 +134,8 @@ class ChatViewModel @Inject constructor(
 
     fun onLoggedIn(info: SessionInfo) {
         session = info
+        // Remember we have a session so future launches auto-login silently on open.
+        sessionHintPrefs.edit().putBoolean("had_session", true).apply()
         viewModelScope.launch {
             // The page-extracted name is the login slug (or a uid fallback), NOT the
             // display nickname — resolve the real one from the backend profile cache

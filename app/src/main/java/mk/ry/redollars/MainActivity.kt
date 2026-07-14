@@ -5,12 +5,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import dagger.hilt.android.AndroidEntryPoint
 import android.webkit.WebView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -27,6 +31,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -44,6 +50,13 @@ import mk.ry.redollars.ui.render.LocalAudioPlayer
 import mk.ry.redollars.ui.render.LocalImageViewer
 import mk.ry.redollars.ui.theme.RedollarsTheme
 
+// Upper bound on how long the splash may cover the cold-start load. Generous enough to
+// let a returning user's hidden auto-login WebView spin up under the splash on slow starts.
+private const val SPLASH_MAX_HOLD_MS = 2500L
+// After the hidden auto-login WebView is inserted, how long its one-time surface-recreation
+// flash takes to pass — kept under the splash so it's never visible over the chat.
+private const val WEBVIEW_FLASH_SETTLE_MS = 500L
+
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
     @Inject lateinit var bmoRenderer: BmoRenderer
@@ -53,8 +66,24 @@ class MainActivity : ComponentActivity() {
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {}
 
+    // Flipped true once the chat's first content frame has rendered; gates splash dismissal.
+    private var contentDrawn = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Must run before super.onCreate(): shows the branded splash during cold start,
+        // then swaps to postSplashScreenTheme (Theme.Redollars) at the first frame.
+        val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        // Hold the splash until the chat has actually drawn its first frame (set from
+        // RedollarsApp below), so we go straight from the branded splash to content with
+        // no blank window-background frames in between. Hard-capped so a stall can never
+        // trap the user on the splash — after the cap we reveal whatever has rendered.
+        val splashStart = SystemClock.uptimeMillis()
+        splash.setKeepOnScreenCondition {
+            !contentDrawn && SystemClock.uptimeMillis() - splashStart < SPLASH_MAX_HOLD_MS
+        }
+
         enableEdgeToEdge()
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -62,7 +91,7 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
         consumeJumpIntent(intent)
-        setContent { RedollarsApp(bmoRenderer, audioPlayer) }
+        setContent { RedollarsApp(bmoRenderer, audioPlayer, onContentDrawn = { contentDrawn = true }) }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -80,17 +109,51 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun RedollarsApp(bmoRenderer: BmoRenderer, audioPlayer: AudioPlayer) {
+private fun RedollarsApp(
+    bmoRenderer: BmoRenderer,
+    audioPlayer: AudioPlayer,
+    onContentDrawn: () -> Unit = {},
+) {
     RedollarsTheme {
         Surface(modifier = Modifier.fillMaxSize()) {
             val vm: ChatViewModel = hiltViewModel()
             LaunchedEffect(Unit) { vm.start() }
+
+            var webView by remember { mutableStateOf<WebView?>(null) }
+            var lightboxUrl by remember { mutableStateOf<String?>(null) }
+
+            // A returning user (logged in on a previous launch) is auto-logged-in silently:
+            // the login WebView is mounted hidden right away and re-derives the session in
+            // the background from saved cookies — no login page, no tap. A first-time user
+            // has no prior session, so nothing heavy is created until they open login/post.
+            val autoLogin = remember { vm.hadPriorSession }
+
+            // Inserting the Bangumi WebView forces a one-time window surface recreation that
+            // briefly blanks the window white. So it is created only when actually needed —
+            // silent auto-login here, or login / first-post on demand — and, for auto-login,
+            // *under the splash* (see the hold below) so that flash is hidden. Once created
+            // it stays mounted for the session so the flash never recurs.
+            var mountWebView by remember { mutableStateOf(autoLogin) }
+
+            // Hold the branded splash over the whole cold-start jank, then lift it straight
+            // onto real content: the system-drawn splash stays smooth while our main thread
+            // is busy, so releasing only once content is ready avoids exposing a blank
+            // window. For auto-login, also wait for the hidden WebView's surface flash to
+            // pass under the splash. Hard-capped in onCreate so a stall can't trap the user.
+            LaunchedEffect(Unit) {
+                vm.messages.first { it.isNotEmpty() }
+                if (autoLogin) {
+                    snapshotFlow { webView != null }.first { it }
+                    delay(WEBVIEW_FLASH_SETTLE_MS)
+                }
+                withFrameNanos { }
+                onContentDrawn()
+            }
+
             LifecycleStartEffect(Unit) {
                 vm.setForeground(true)
                 onStopOrDispose { vm.setForeground(false) }
             }
-            var webView by remember { mutableStateOf<WebView?>(null) }
-            var lightboxUrl by remember { mutableStateOf<String?>(null) }
 
             // The VM requests the OAuth authorize flow after login when no valid
             // backend token is stored; drive it in the (still visible) login WebView.
@@ -113,7 +176,10 @@ private fun RedollarsApp(bmoRenderer: BmoRenderer, audioPlayer: AudioPlayer) {
                                 when {
                                     vm.editing != null -> vm.submitEdit(text)
                                     info == null -> vm.noteSend("Log in first")
-                                    wv == null -> vm.noteSend("WebView not ready")
+                                    wv == null -> {
+                                        mountWebView = true   // not preloaded yet; kick it off
+                                        vm.noteSend("One sec — getting ready, try again")
+                                    }
                                     else -> {
                                         val body = vm.beginSend(text)
                                         wv.evaluateJavascript(buildPostJs(body), null)
@@ -126,15 +192,19 @@ private fun RedollarsApp(bmoRenderer: BmoRenderer, audioPlayer: AudioPlayer) {
 
                     // Persistent Bangumi WebView: full-screen while logging in, kept alive
                     // (1dp) afterwards so posts run same-origin from the real session.
-                    mk.ry.redollars.ui.BangumiWebView(
-                        visible = vm.showLogin,
-                        onCreated = { webView = it },
-                        onResult = vm::onLoggedIn,
-                        onLog = vm::externalLog,
-                        onPostResult = vm::onWebPostResult,
-                        onAuthToken = vm::onAuthToken,
-                        modifier = Modifier.align(Alignment.TopStart),
-                    )
+                    // Mounted lazily (after first frame, or immediately if login opens) so
+                    // its Chromium init stays off the cold-start critical path.
+                    if (mountWebView || vm.showLogin) {
+                        mk.ry.redollars.ui.BangumiWebView(
+                            visible = vm.showLogin,
+                            onCreated = { webView = it; mountWebView = true },
+                            onResult = vm::onLoggedIn,
+                            onLog = vm::externalLog,
+                            onPostResult = vm::onWebPostResult,
+                            onAuthToken = vm::onAuthToken,
+                            modifier = Modifier.align(Alignment.TopStart),
+                        )
+                    }
 
                     if (vm.showLogin) {
                         FilledTonalIconButton(

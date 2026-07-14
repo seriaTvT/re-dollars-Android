@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Splash background. Light matches the adaptive-icon background (ic_launcher_background);
+         the night variant lives in values-night/colors.xml. -->
+    <color name="splash_background">#F2CDD9</color>
+
+    <!-- Post-splash Activity window background. Must NOT be white, or a dark-mode cold
+         start flashes white between the splash lifting and Compose painting the chat.
+         Neutral M3-ish surface tones; the night value lives in values-night/colors.xml. -->
+    <color name="window_background">#FFFBFF</color>
+</resources>
