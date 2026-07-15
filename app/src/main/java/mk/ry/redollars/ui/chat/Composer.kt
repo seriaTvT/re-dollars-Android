@@ -3,6 +3,7 @@ package mk.ry.redollars.ui.chat
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,13 +12,16 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -43,6 +47,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -60,6 +65,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.path
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,6 +77,7 @@ import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.UserSearchDto
 import kotlinx.coroutines.flow.MutableStateFlow
 import mk.ry.redollars.ui.render.LocalAudioPlayer
+import mk.ry.redollars.ui.render.Smilies
 import mk.ry.redollars.ui.render.avatarUrl
 
 /** The web app's emoji-panel glyph (styles/index.css --dollars-icon-emoji): a tray
@@ -123,6 +130,7 @@ private fun replyPreview(content: String): String = content
     .take(50)
     .ifEmpty { "…" }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChatComposer(
     value: TextFieldValue,
@@ -153,6 +161,14 @@ fun ChatComposer(
 ) {
     var showSmilies by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    // Keyboard and smiley panel are mutually exclusive: the panel folds away the moment
+    // the IME shows (e.g. the user taps the text field). Opening the panel hides the
+    // keyboard below, so this effect never fights the toggle.
+    val imeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(imeVisible) { if (imeVisible) showSmilies = false }
+    // A back gesture closes the panel before it can pop the screen.
+    BackHandler(enabled = showSmilies) { showSmilies = false }
     val micPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> if (granted) onStartVoice() }
@@ -213,7 +229,10 @@ fun ChatComposer(
                         Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        IconButton(onClick = { showSmilies = !showSmilies }) {
+                        IconButton(onClick = {
+                            showSmilies = !showSmilies
+                            if (showSmilies) keyboard?.hide()
+                        }) {
                             Icon(
                                 EmojiPanelIcon,
                                 contentDescription = "Smilies",
@@ -301,6 +320,7 @@ fun ChatComposer(
                         modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                         columns = GridCells.Adaptive(minSize = 44.dp),
                         gridHeight = 240.dp,
+                        groups = Smilies.composerGroups,
                         favorites = favorites,
                         onPickSticker = { url ->
                             onPickSticker(url)

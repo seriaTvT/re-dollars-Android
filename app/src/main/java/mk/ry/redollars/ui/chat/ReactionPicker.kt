@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,20 +64,21 @@ fun SmileyPicker(
     modifier: Modifier = Modifier,
     columns: GridCells = GridCells.Fixed(7),
     gridHeight: Dp = 216.dp,
+    groups: List<Smilies.Group> = Smilies.pickerGroups,
     favorites: List<String>? = null,
     onPickSticker: (String) -> Unit = {},
     onUploadFavorite: () -> Unit = {},
     onRemoveFavorite: (String) -> Unit = {},
 ) {
     var tabIndex by rememberSaveable { mutableIntStateOf(0) }
-    val favTabIndex = Smilies.pickerGroups.size
+    val favTabIndex = groups.size
     val maxTab = if (favorites != null) favTabIndex else favTabIndex - 1
     if (tabIndex > maxTab) tabIndex = 0
     val cs = MaterialTheme.colorScheme
 
     Column(modifier.padding(horizontal = 6.dp)) {
         Row(Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-            Smilies.pickerGroups.forEachIndexed { i, g ->
+            groups.forEachIndexed { i, g ->
                 val selected = i == tabIndex
                 Box(
                     contentAlignment = Alignment.Center,
@@ -127,26 +129,68 @@ fun SmileyPicker(
         if (favorites != null && tabIndex == favTabIndex) {
             FavoritesGrid(favorites, gridHeight, onPickSticker, onUploadFavorite, onRemoveFavorite)
         } else {
-            val group = Smilies.pickerGroups[tabIndex.coerceIn(0, favTabIndex - 1)]
-            LazyVerticalGrid(
-                columns = columns,
-                modifier = Modifier.fillMaxWidth().height(gridHeight),
-            ) {
-                items(group.codes, key = { it }) { code ->
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .clickable { onPick(code) },
-                    ) {
-                        AsyncImage(
-                            model = remember(code) { Smilies.urlFor(code) },
-                            contentDescription = code,
-                            modifier = Modifier.size(26.dp),
-                        )
+            val group = groups[tabIndex.coerceIn(0, favTabIndex - 1)]
+            if (group.isLarge) {
+                LargeSmileyGrid(group, gridHeight, onPick)
+            } else {
+                LazyVerticalGrid(
+                    columns = columns,
+                    modifier = Modifier.fillMaxWidth().height(gridHeight),
+                ) {
+                    items(group.codes, key = { it }) { code ->
+                        Box(
+                            contentAlignment = Alignment.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(36.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onPick(code) },
+                        ) {
+                            AsyncImage(
+                                model = remember(code) { Smilies.urlFor(code) },
+                                contentDescription = code,
+                                modifier = Modifier.size(26.dp),
+                            )
+                        }
                     }
+                }
+            }
+        }
+    }
+}
+
+/** Large animated stickers (Musume/Blake) shown in bigger tiles under section headers
+ *  (SmileyPanel.tsx large-smiley-mode); tapping inserts the sticker's code. */
+@Composable
+private fun LargeSmileyGrid(group: Smilies.Group, gridHeight: Dp, onPick: (String) -> Unit) {
+    val cs = MaterialTheme.colorScheme
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 56.dp),
+        modifier = Modifier.fillMaxWidth().height(gridHeight),
+    ) {
+        group.sections.forEach { section ->
+            item(key = "hdr-${section.name}", span = { GridItemSpan(maxLineSpan) }) {
+                Text(
+                    text = section.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = cs.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().padding(start = 4.dp, top = 8.dp, bottom = 2.dp),
+                )
+            }
+            items(section.codes, key = { it }) { code ->
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .padding(3.dp)
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onPick(code) },
+                ) {
+                    AsyncImage(
+                        model = remember(code) { Smilies.urlFor(code) },
+                        contentDescription = code,
+                        modifier = Modifier.size(46.dp),
+                    )
                 }
             }
         }
