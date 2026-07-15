@@ -234,13 +234,23 @@ class ChatViewModel @Inject constructor(
         oauthRequestUrl = null
         showAccount = false
         showLogin = false
-        val cm = android.webkit.CookieManager.getInstance()
-        cm.removeAllCookies(null)
-        cm.flush()
-        // Reset the shared WebView off the logged-in page so a later login starts clean.
-        webViewReloadUrl = "${mk.ry.redollars.net.Config.BGM_HOST}/login"
         repo.connect(uid = 0) // back to anonymous read
-        log("Logged out")
+
+        // Wipe *all* persisted web state so the next login is as clean as a fresh
+        // install. Clearing only cookies leaves auth.ry.mk's rymk-auth session (and
+        // bgm.tv OAuth state) behind in DOM storage — /api/auth/bangumi/start then
+        // finds a live session and re-mints a JWT without ever showing the Bangumi
+        // consent page. WebStorage/CookieManager are process-wide singletons, so no
+        // WebView reference is needed. removeAllCookies is async: await its callback
+        // before reloading, or the reload races the wipe and can restore the session.
+        android.webkit.WebStorage.getInstance().deleteAllData()
+        val cm = android.webkit.CookieManager.getInstance()
+        cm.removeAllCookies {
+            cm.flush()
+            // Reset the shared WebView off the logged-in page so a later login starts clean.
+            webViewReloadUrl = "${mk.ry.redollars.net.Config.BGM_HOST}/login"
+            log("Logged out")
+        }
     }
 
     /** User closed the login overlay; abandon any in-flight rymk-auth request. If a
