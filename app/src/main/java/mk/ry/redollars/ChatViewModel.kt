@@ -287,6 +287,14 @@ class ChatViewModel @Inject constructor(
 
     fun insertSmiley(code: String) = insertAtCursor(code)
 
+    /** Long-press an author's avatar to mention them. Messages carry a uid + nickname
+     *  but no `@username` handle, so we insert the resolved `[user=id]` BBCode directly —
+     *  exactly what [transformMentions] emits for a completed @-mention — rather than the
+     *  readable `@name` the completer inserts. */
+    fun mentionUser(uid: Long, nickname: String) {
+        insertAtCursor("[user=$uid]${nickname.ifBlank { uid.toString() }}[/user] ")
+    }
+
     /** A saved sticker was picked from the panel (SmileyPanel.tsx insert format). */
     fun insertSticker(url: String) = insertAtCursor("[sticker]$url[/sticker]")
 

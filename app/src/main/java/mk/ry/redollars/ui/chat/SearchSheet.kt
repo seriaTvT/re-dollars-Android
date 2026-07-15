@@ -153,7 +153,7 @@ private fun SearchResultRow(m: MessageDto) {
     val cs = MaterialTheme.colorScheme
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
         AsyncImage(
-            model = avatarUrl(m.avatar, 's'),
+            model = avatarUrl(m.avatar, 'l'),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.size(32.dp).clip(CircleShape),

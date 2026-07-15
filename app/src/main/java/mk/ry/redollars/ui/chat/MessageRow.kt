@@ -94,6 +94,7 @@ fun MessageRow(
     canModify: Boolean = false,
     online: Boolean = false,
     onShowProfile: (Long) -> Unit = {},
+    onMention: () -> Unit = {},
     onReact: (String) -> Unit = {},
     onReply: () -> Unit = {},
     onEdit: () -> Unit = {},
@@ -177,13 +178,20 @@ fun MessageRow(
                 if (firstInGroup) {
                     Box {
                         AsyncImage(
-                            model = avatarUrl(m.avatar, 's'),
+                            // 'l' (not 's'): a 48px small avatar upscaled into the 34dp
+                            // circle looks blurry on hi-DPI screens; the large source
+                            // stays crisp and Coil downscales it once.
+                            model = avatarUrl(m.avatar, 'l'),
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
                                 .size(AVATAR)
                                 .clip(CircleShape)
-                                .clickable { onShowProfile(m.uid) },
+                                .combinedClickable(
+                                    onClick = { onShowProfile(m.uid) },
+                                    // Long-press to @mention the author in the composer.
+                                    onLongClick = onMention,
+                                ),
                         )
                         if (online) {
                             Box(

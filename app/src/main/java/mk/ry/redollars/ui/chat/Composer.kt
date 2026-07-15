@@ -521,7 +521,7 @@ private fun ReplyStrip(replyTo: MessageDto, onCancel: () -> Unit) {
     ) {
         Row(Modifier.width(3.dp).fillMaxHeight().background(cs.primary)) {}
         AsyncImage(
-            model = avatarUrl(replyTo.avatar, 's'),
+            model = avatarUrl(replyTo.avatar, 'l'),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.padding(start = 8.dp).size(24.dp).clip(CircleShape),
