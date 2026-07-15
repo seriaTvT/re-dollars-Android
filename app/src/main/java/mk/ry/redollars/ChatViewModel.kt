@@ -75,6 +75,8 @@ class ChatViewModel @Inject constructor(
     // ---- UI-only state ----
     var session by mutableStateOf<SessionInfo?>(null); private set
     var showLogin by mutableStateOf(false)
+    /** Account sheet (identity + backend status + logout) for a logged-in user. */
+    var showAccount by mutableStateOf(false)
     var sendStatus by mutableStateOf<String?>(null); private set
     var loadingOlder by mutableStateOf(false); private set
     var historyExhausted by mutableStateOf(false); private set
@@ -201,6 +203,28 @@ class ChatViewModel @Inject constructor(
     /** Host consumed [webViewReloadUrl] (reloaded the WebView); clear the request. */
     fun onWebViewReloaded() {
         webViewReloadUrl = null
+    }
+
+    /** Sign out: drop the backend token, forget the session hint (so the next launch
+     *  won't silently auto-login), clear Bangumi cookies so the WebView session is gone,
+     *  reset the shared WebView to a logged-out page, and fall back to the anonymous
+     *  read connection. Posting/edit/delete lock again until the user logs back in. */
+    fun logout() {
+        repo.setAuthToken(null)
+        sessionHintPrefs.edit().putBoolean("had_session", false).apply()
+        session = null
+        authReady = false
+        authNonce = null
+        oauthRequestUrl = null
+        showAccount = false
+        showLogin = false
+        val cm = android.webkit.CookieManager.getInstance()
+        cm.removeAllCookies(null)
+        cm.flush()
+        // Reset the shared WebView off the logged-in page so a later login starts clean.
+        webViewReloadUrl = "${mk.ry.redollars.net.Config.BGM_HOST}/login"
+        repo.connect(uid = 0) // back to anonymous read
+        log("Logged out")
     }
 
     /** User closed the login overlay; abandon any in-flight rymk-auth request. If a

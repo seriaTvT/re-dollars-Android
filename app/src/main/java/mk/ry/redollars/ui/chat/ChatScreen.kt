@@ -100,7 +100,9 @@ fun ChatScreen(
                 onSearch = { showSearch = true },
                 onGallery = { showGallery = true },
                 onNotifications = { showNotifications = true },
-                onAccount = onOpenLogin,
+                // Logged in: open the account sheet (status + logout). Logged out: the
+                // login WebView, as before.
+                onAccount = { if (vm.session != null) vm.showAccount = true else onOpenLogin() },
             )
         },
         bottomBar = {
@@ -163,6 +165,18 @@ fun ChatScreen(
     }
     if (showGallery) {
         GallerySheet(fetch = vm::fetchGallery, onDismiss = { showGallery = false })
+    }
+
+    if (vm.showAccount) {
+        vm.session?.let { s ->
+            AccountSheet(
+                session = s,
+                authReady = vm.authReady,
+                loadProfile = vm::loadProfile,
+                onLogout = vm::logout,
+                onDismiss = { vm.showAccount = false },
+            )
+        }
     }
 
     vm.profileUid?.let { uid ->
