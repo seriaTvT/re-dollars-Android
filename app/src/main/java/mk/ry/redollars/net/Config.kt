@@ -9,7 +9,7 @@ object Config {
     /** Bangumi domain used for login + posting. bangumi.tv connects directly to the
      *  origin (no Cloudflare), unlike chii.in. Cookies are per-domain, so switching
      *  hosts requires a fresh login. */
-    const val BGM_HOST = "https://bangumi.tv"
+    const val BGM_HOST = "https://bgm.tv"
     const val DOLLARS_URL = "$BGM_HOST/dollars"
     const val DOLLARS_POST_URL = "$BGM_HOST/dollars?ajax=1"
 
