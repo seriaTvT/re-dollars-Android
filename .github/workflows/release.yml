@@ -1,0 +1,91 @@
+name: Build & Release
+
+# Fires when you push a version tag, e.g.  git tag v0.2.0 && git push origin v0.2.0
+# You can also run it by hand from the Actions tab (workflow_dispatch).
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # --- Secret materials --------------------------------------------------
+      # The keystore is a binary file, so it is stored base64-encoded in a
+      # secret and decoded back to the path the signing config expects
+      # (storeFile = file("../release.keystore") -> repo root).
+      - name: Decode release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 --decode > release.keystore
+
+      # Optional: FCM config. The app builds fine without it (build.gradle.kts
+      # applies google-services only when the file exists), but a real release
+      # needs it for push. Skips cleanly if the secret is unset.
+      - name: Decode google-services.json
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            echo "$GOOGLE_SERVICES_JSON_BASE64" | base64 --decode > app/google-services.json
+          else
+            echo "No GOOGLE_SERVICES_JSON_BASE64 secret set; building without FCM."
+          fi
+
+      # --- Build -------------------------------------------------------------
+      # The passwords are read by app/build.gradle.kts via System.getenv(...),
+      # so we just expose them as env vars here.
+      - name: Build signed release APK
+        env:
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: ./gradlew assembleRelease --no-daemon
+
+      # Rename app-release.apk -> re-dollars-<tag>.apk (e.g. re-dollars-v0.2.0.apk).
+      # github.ref_name is the tag on a tag push, or the branch on manual runs.
+      - name: Rename APK
+        id: rename
+        run: |
+          APK="re-dollars-${{ github.ref_name }}.apk"
+          mv app/build/outputs/apk/release/app-release.apk "app/build/outputs/apk/release/$APK"
+          echo "apk_path=app/build/outputs/apk/release/$APK" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK as build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: re-dollars-release-apk
+          path: ${{ steps.rename.outputs.apk_path }}
+
+      # --- Publish -----------------------------------------------------------
+      # Only creates a GitHub Release when triggered by a tag push.
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.rename.outputs.apk_path }}
+          generate_release_notes: true
+
+      # Always clean up the decoded secrets, even if a step above failed.
+      - name: Clean up secret files
+        if: always()
+        run: rm -f release.keystore app/google-services.json
