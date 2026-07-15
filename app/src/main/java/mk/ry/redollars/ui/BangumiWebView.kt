@@ -189,6 +189,12 @@ fun BangumiWebView(
                     private var done = false
 
                     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                        // A fresh login always (re)starts at the Bangumi login page — logout
+                        // navigates this persistent WebView there. Reset the one-shot session
+                        // probe so a re-login is detected again; without this, `done` stays
+                        // latched from the first login and onPageFinished skips the re-login
+                        // (the WebView is no longer recreated between logins).
+                        if (url != null && url.startsWith("${Config.BGM_HOST}/login")) done = false
                         // Trace the OAuth redirect chain so a stall (bgm.tv second login,
                         // Cloudflare interstitial, unexpected page) is visible in the log.
                         if (url != null && (url.startsWith(AUTH_ORIGIN) || url.contains("/oauth/"))) {
@@ -210,6 +216,12 @@ fun BangumiWebView(
                             view.evaluateJavascript(OPENER_SHIM_JS, null)
                         }
                         if (done) return
+                        // Skip the OAuth redirect chain: auth.ry.mk and bgm.tv/oauth/*
+                        // are logged-in Bangumi pages that still expose CHOBITS_UID, so
+                        // probing them here would mis-fire onLoggedIn and restart the
+                        // token exchange. The JWT arrives via the opener shim, not this
+                        // probe, so nothing is lost by ignoring these pages.
+                        if (url != null && (url.startsWith(AUTH_ORIGIN) || url.contains("/oauth/"))) return
                         view.evaluateJavascript(EXTRACT_JS) { raw ->
                             val parsed = parseSession(raw) ?: return@evaluateJavascript
                             // uid present => logged in. formhash is optional (posting
