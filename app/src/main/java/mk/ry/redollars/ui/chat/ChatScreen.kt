@@ -110,7 +110,9 @@ fun ChatScreen(
                 value = vm.composerValue,
                 onValueChange = vm::onComposerChanged,
                 enabled = vm.session != null,
-                status = vm.sendStatus,
+                // Diagnostic statuses (post/edit pipeline, internal ids) only surface
+                // when the debug panel is enabled.
+                status = if (vm.sendStatusIsDebug && !showDebug) null else vm.sendStatus,
                 replyTo = vm.replyTo,
                 onCancelReply = vm::cancelReply,
                 editing = vm.editing != null,

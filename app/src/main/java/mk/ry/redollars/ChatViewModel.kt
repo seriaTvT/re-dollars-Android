@@ -77,7 +77,23 @@ class ChatViewModel @Inject constructor(
     var showLogin by mutableStateOf(false)
     /** Account sheet (identity + backend status + logout) for a logged-in user. */
     var showAccount by mutableStateOf(false)
-    var sendStatus by mutableStateOf<String?>(null); private set
+    private val _sendStatus = mutableStateOf<String?>(null)
+    var sendStatus: String?
+        get() = _sendStatus.value
+        // Plain assignments are user-facing; setting one clears the debug flag.
+        private set(value) {
+            _sendStatus.value = value
+            sendStatusIsDebug = false
+        }
+    /** True when the current [sendStatus] is diagnostic noise (post/edit pipeline,
+     *  internal ids). The UI hides these unless the debug panel is enabled. */
+    var sendStatusIsDebug by mutableStateOf(false); private set
+
+    /** Set a debug-only status (see [sendStatusIsDebug]). */
+    private fun setDebugStatus(message: String?) {
+        sendStatus = message // resets the flag…
+        sendStatusIsDebug = true // …then marks this one as debug
+    }
     var loadingOlder by mutableStateOf(false); private set
     var historyExhausted by mutableStateOf(false); private set
     /** Message id the list should scroll to (set when opening a notification). */
@@ -649,7 +665,7 @@ class ChatViewModel @Inject constructor(
             sendStatus = "Saving edit…"
             val body = (edit.hiddenQuote ?: "") + transformMentions(text)
             val ok = repo.editMessage(edit.id, body)
-            sendStatus = if (ok) "Edited (id=${edit.id})" else "Edit failed"
+            if (ok) setDebugStatus("Edited (id=${edit.id})") else sendStatus = "Edit failed"
             if (ok) {
                 editing = null
                 setComposer("")
@@ -659,7 +675,7 @@ class ChatViewModel @Inject constructor(
 
     fun deleteMessage(id: Long) {
         viewModelScope.launch {
-            sendStatus = if (repo.deleteMessage(id)) "Deleted (id=$id)" else "Delete failed"
+            if (repo.deleteMessage(id)) setDebugStatus("Deleted (id=$id)") else sendStatus = "Delete failed"
         }
     }
 
@@ -682,7 +698,7 @@ class ChatViewModel @Inject constructor(
         discardVoiceDraft()
         setComposer("")
         pendingText = body
-        sendStatus = "Posting via WebView…"
+        setDebugStatus("Posting via WebView…")
         return body
     }
 
@@ -701,9 +717,11 @@ class ChatViewModel @Inject constructor(
                 sendStatus = "Post failed (status=$status)"
                 return@launch
             }
-            sendStatus = "Posted; confirming…"
+            setDebugStatus("Posted; confirming…")
             val confirmed = confirmLoop(session?.uid ?: 0, pendingText)
-            sendStatus = if (confirmed != null) "Confirmed (id=${confirmed.id})" else "Posted; awaiting WS echo"
+            setDebugStatus(
+                if (confirmed != null) "Confirmed (id=${confirmed.id})" else "Posted; awaiting WS echo",
+            )
         }
     }
 
