@@ -16,15 +16,29 @@ object Config {
     /** Bangumi avatar CDN prefix; `l` = large. Avatars come back as relative paths. */
     const val AVATAR_BASE = "https://lain.bgm.tv/pic/user/l/"
 
-    /** OAuth app id (userscript BGM_APP_ID); the callback URL must match the backend's
-     *  registered redirect URI. The callback response sets a dollars_auth cookie on the
-     *  backend domain, which the login WebView harvests. */
-    const val BGM_APP_ID = "bgm460268b348b05f082"
-    const val OAUTH_CALLBACK_URL = "$BACKEND_API_URL/auth/callback"
+    /** rymk-auth unified login (auth.ry.mk) — the same flow the web client uses
+     *  (performLogin in auth.ts). The login WebView opens the popup-mode /start
+     *  endpoint, the user completes Bangumi OAuth, and rymk-auth hands back a signed
+     *  JWT via the postMessage its callback page makes to `window.opener` (which
+     *  BangumiWebView shims). That JWT is accepted directly as the backend Bearer
+     *  token AND by the up.ry.mk upload server, unlike the legacy opaque dollars_auth
+     *  token that uploads reject. */
+    const val AUTH_BASE_URL = "https://auth.ry.mk"
+    const val AUTH_CLIENT = "re-dollars"
 
-    fun oauthAuthorizeUrl(): String {
-        val redirect = java.net.URLEncoder.encode(OAUTH_CALLBACK_URL, "UTF-8")
-        return "$BGM_HOST/oauth/authorize?client_id=$BGM_APP_ID&response_type=code&redirect_uri=$redirect"
+    /** Builds the popup /start URL. [state] is a per-request nonce echoed back in the
+     *  postMessage so we can reject stale/foreign messages. `origin` is validated
+     *  server-side against the client's allowlist (custom app schemes are rejected);
+     *  the Bangumi host is an allowed https origin, and since we capture the token from
+     *  the opener shim rather than a real cross-window post, that check is all it needs
+     *  to satisfy. */
+    fun rymkAuthStartUrl(state: String): String {
+        fun enc(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
+        return "$AUTH_BASE_URL/api/auth/bangumi/start" +
+            "?mode=popup" +
+            "&client=${enc(AUTH_CLIENT)}" +
+            "&origin=${enc(BGM_HOST)}" +
+            "&state=${enc(state)}"
     }
 
     /** Standalone upload server (media.ts): images to /api/upload need the backend

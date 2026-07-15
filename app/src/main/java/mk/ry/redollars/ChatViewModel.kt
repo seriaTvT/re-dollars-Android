@@ -93,8 +93,15 @@ class ChatViewModel @Inject constructor(
     var editing by mutableStateOf<EditingState?>(null); private set
     /** True once the backend Bearer token is validated for this session's uid. */
     var authReady by mutableStateOf(false); private set
-    /** Non-null asks the host to load the OAuth authorize URL in the login WebView. */
+    /** Non-null asks the host to load the rymk-auth start URL in the login WebView. */
     var oauthRequestUrl by mutableStateOf<String?>(null); private set
+    /** Non-null asks the host to reload the shared WebView to this URL — used to return
+     *  it to the Bangumi origin after rymk-auth navigated it away, so same-origin
+     *  posting works again. */
+    var webViewReloadUrl by mutableStateOf<String?>(null); private set
+    /** Per-request nonce for the in-flight rymk-auth popup; the returned token's `state`
+     *  must match it or we reject the message. */
+    private var authNonce: String? = null
     /** uid whose profile sheet is open (tap an avatar). */
     var profileUid by mutableStateOf<Long?>(null)
     val logs: SnapshotStateList<String> = mutableStateListOf()
@@ -150,36 +157,60 @@ class ChatViewModel @Inject constructor(
             repo.connect(info.uid, nickname, avatar)
 
             // Backend token: reuse a stored one when it belongs to this uid; otherwise
-            // drive the OAuth authorize flow in the still-visible login WebView (its
-            // callback sets a dollars_auth cookie we can harvest).
+            // drive the rymk-auth flow in the login WebView, which must be visible so the
+            // user can complete the bgm.tv login/authorize it redirects through. The
+            // captured JWT is delivered back via onAuthToken.
             if (repo.validateAuthToken(info.uid)) {
                 authReady = true
                 showLogin = false
                 log("Backend auth ready (stored token)")
                 registerPush()
             } else {
-                oauthRequestUrl = mk.ry.redollars.net.Config.oauthAuthorizeUrl()
-                log("Requesting backend OAuth authorization…")
+                val nonce = java.util.UUID.randomUUID().toString()
+                authNonce = nonce
+                showLogin = true
+                oauthRequestUrl = mk.ry.redollars.net.Config.rymkAuthStartUrl(nonce)
+                log("Requesting rymk-auth authorization…")
             }
         }
     }
 
-    /** Token harvested from the OAuth callback cookie by the WebView. */
-    fun onAuthToken(token: String) {
-        oauthRequestUrl = null
-        viewModelScope.launch {
+    /** JWT captured from the rymk-auth popup (the `rymk_auth` postMessage in auth.ts),
+     *  delivered off the main thread by the WebView bridge — so marshal onto Main before
+     *  touching Compose state. [state] must equal the nonce we minted for this request,
+     *  or the message is ignored (stale/foreign popup guard). */
+    fun onAuthToken(token: String, state: String?) {
+        viewModelScope.launch(Dispatchers.Main.immediate) {
+            if (authNonce == null || state != authNonce) {
+                log("rymk-auth: ignoring token with mismatched state")
+                return@launch
+            }
+            authNonce = null
+            oauthRequestUrl = null
             repo.setAuthToken(token)
             authReady = repo.validateAuthToken(session?.uid ?: 0)
             showLogin = false
-            log("Backend auth ${if (authReady) "ready (new token)" else "validation FAILED"}")
+            // rymk-auth left the shared WebView on bgm.tv/auth.ry.mk; return it to the
+            // Bangumi origin so buildPostJs's same-origin fetch works.
+            webViewReloadUrl = mk.ry.redollars.net.Config.DOLLARS_URL
+            log("Backend auth ${if (authReady) "ready (rymk JWT)" else "validation FAILED"}")
             if (authReady) registerPush()
         }
     }
 
-    /** User closed the login overlay; abandon any in-flight OAuth request. */
+    /** Host consumed [webViewReloadUrl] (reloaded the WebView); clear the request. */
+    fun onWebViewReloaded() {
+        webViewReloadUrl = null
+    }
+
+    /** User closed the login overlay; abandon any in-flight rymk-auth request. If a
+     *  Bangumi session already exists, return the WebView to the Bangumi origin so
+     *  posting still works (rymk-auth may have navigated it to bgm.tv/auth.ry.mk). */
     fun dismissLogin() {
         showLogin = false
         oauthRequestUrl = null
+        authNonce = null
+        if (session != null) webViewReloadUrl = mk.ry.redollars.net.Config.DOLLARS_URL
     }
 
     // ---- Composer typing signals: start immediately, stop after 2.5s idle or on send. ----

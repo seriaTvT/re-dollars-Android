@@ -70,6 +70,10 @@ kotlin {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.19.0")
+    // Document-start JS injection (WebViewCompat.addDocumentStartJavaScript): installs
+    // the window.opener shim that captures the rymk-auth JWT postMessage before the
+    // auth.ry.mk callback page's own script runs.
+    implementation("androidx.webkit:webkit:1.12.1")
     // Backwards-compatible splash: replaces the blank white cold-start window with a
     // branded icon-on-color splash, and uses the platform splash on Android 12+.
     implementation("androidx.core:core-splashscreen:1.0.1")

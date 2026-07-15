@@ -155,10 +155,16 @@ private fun RedollarsApp(
                 onStopOrDispose { vm.setForeground(false) }
             }
 
-            // The VM requests the OAuth authorize flow after login when no valid
-            // backend token is stored; drive it in the (still visible) login WebView.
+            // The VM requests the rymk-auth flow after login when no valid backend token
+            // is stored; drive it in the (now visible) login WebView.
             LaunchedEffect(vm.oauthRequestUrl) {
                 vm.oauthRequestUrl?.let { webView?.loadUrl(it) }
+            }
+
+            // After rymk-auth, the VM asks to return the WebView to the Bangumi origin so
+            // same-origin posting works again.
+            LaunchedEffect(vm.webViewReloadUrl) {
+                vm.webViewReloadUrl?.let { webView?.loadUrl(it); vm.onWebViewReloaded() }
             }
 
             CompositionLocalProvider(

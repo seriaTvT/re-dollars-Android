@@ -1,6 +1,7 @@
 package mk.ry.redollars.ui
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
@@ -11,7 +12,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -32,6 +36,47 @@ private const val EXTRACT_JS = """
 })();
 """
 
+/**
+ * Installed on auth.ry.mk pages. rymk-auth's popup callback returns the JWT by calling
+ * `window.opener.postMessage(...)`, and it guards that with `window.opener && ...`. A
+ * top-level WebView load has no opener, so unless we plant one *before* the page's own
+ * script runs, that guard short-circuits and the token is silently dropped. So this must
+ * land at document-start; the getter (not a bare assignment) also survives the
+ * `window.opener = null` a security-minded page may run first. window.name is set to the
+ * popup name the web flow uses, and the shim carries no-op close/focus in case the page
+ * calls them. It reports back via AndroidAuth.log so the debug log shows it ran.
+ */
+private const val OPENER_SHIM_JS = """
+(function(){
+  try { if (window.name !== 'rymk-auth') window.name = 'rymk-auth'; } catch (e) {}
+  if (window.__rdAuthHook) return;
+  window.__rdAuthHook = true;
+  function jlog(m){ try { if (window.AndroidAuth && AndroidAuth.log) AndroidAuth.log(String(m)); } catch (e) {} }
+  function forward(data){
+    try {
+      var s = (typeof data === 'string') ? data : JSON.stringify(data);
+      if (window.AndroidAuth && AndroidAuth.deliver) AndroidAuth.deliver(s);
+    } catch (e) { jlog('forward error: ' + e); }
+  }
+  var shim = {
+    postMessage: function(data, targetOrigin){ forward(data); },
+    close: function(){}, focus: function(){}, blur: function(){}
+  };
+  try {
+    Object.defineProperty(window, 'opener', {
+      configurable: true,
+      get: function(){ return shim; },
+      set: function(){}
+    });
+  } catch (e) {
+    try { window.opener = shim; } catch (e2) { jlog('opener install failed: ' + e2); }
+  }
+  jlog('opener shim installed @ ' + location.href);
+})();
+"""
+
+private const val AUTH_ORIGIN = "https://auth.ry.mk"
+
 private data class Parsed(val uid: Long?, val name: String?, val formhash: String?)
 
 private fun parseSession(raw: String): Parsed? {
@@ -46,17 +91,44 @@ private fun parseSession(raw: String): Parsed? {
     return Parsed(uid, name, formhash)
 }
 
+private data class AuthMessage(val ok: Boolean, val token: String?, val state: String?)
+
+/** Parses a rymk-auth postMessage payload: `{type:'rymk_auth', ok, token, state}`. */
+private fun parseAuthMessage(raw: String): AuthMessage? {
+    val obj = runCatching { AppJson.parseToJsonElement(raw).jsonObject }.getOrNull() ?: return null
+    if (obj["type"]?.jsonPrimitive?.contentOrNull != "rymk_auth") return null
+    return AuthMessage(
+        ok = obj["ok"]?.jsonPrimitive?.booleanOrNull ?: false,
+        token = obj["token"]?.jsonPrimitive?.contentOrNull,
+        state = obj["state"]?.jsonPrimitive?.contentOrNull,
+    )
+}
+
 /** Bridge so the in-page fetch() can report its async result back to Kotlin. */
 private class PostBridge(private val cb: (String) -> Unit) {
     @JavascriptInterface
     fun deliver(json: String) = cb(json)
 }
 
+/** Bridge for the rymk-auth flow. [onMessage] receives the postMessage payload from the
+ *  opener shim; [onDiag] surfaces the shim's own trace into the debug log. Both fire on a
+ *  JS/binder thread, so the ViewModel marshals onto Main before touching state. */
+private class AuthBridge(
+    private val onMessage: (String) -> Unit,
+    private val onDiag: (String) -> Unit,
+) {
+    @JavascriptInterface
+    fun deliver(json: String) = onMessage(json)
+
+    @JavascriptInterface
+    fun log(msg: String) = onDiag(msg)
+}
+
 /**
- * Single persistent Bangumi WebView. Full-screen while [visible] (login); otherwise
- * kept alive off-screen so messages can be POSTed *same-origin* from the real logged-in
- * session (see MainActivity.buildPostJs). This mirrors the userscript, whose fetch to
- * `/dollars?ajax=1` succeeds precisely because it runs on the Bangumi origin.
+ * Single persistent Bangumi WebView. Full-screen while [visible] (login / rymk-auth);
+ * otherwise kept alive off-screen so messages can be POSTed *same-origin* from the real
+ * logged-in session (see MainActivity.buildPostJs). This mirrors the userscript, whose
+ * fetch to `/dollars?ajax=1` succeeds precisely because it runs on the Bangumi origin.
  */
 @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
@@ -66,7 +138,7 @@ fun BangumiWebView(
     onResult: (SessionInfo) -> Unit,
     onLog: (String) -> Unit,
     onPostResult: (String) -> Unit,
-    onAuthToken: (String) -> Unit = {},
+    onAuthToken: (String, String?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
@@ -80,31 +152,63 @@ fun BangumiWebView(
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 addJavascriptInterface(PostBridge(onPostResult), "AndroidPost")
+                addJavascriptInterface(
+                    AuthBridge(
+                        onMessage = { raw ->
+                            onLog("rymk-auth payload: ${raw.take(120)}")
+                            when (val msg = parseAuthMessage(raw)) {
+                                null -> {}
+                                else -> if (msg.ok && !msg.token.isNullOrBlank()) {
+                                    onLog("rymk-auth: JWT received")
+                                    onAuthToken(msg.token, msg.state)
+                                } else {
+                                    onLog("rymk-auth: login reported failure (ok=${msg.ok})")
+                                }
+                            }
+                        },
+                        onDiag = { m -> onLog("rymk-auth js: $m") },
+                    ),
+                    "AndroidAuth",
+                )
+
+                // Preferred: inject the opener shim at document-start, scoped to
+                // auth.ry.mk, so it is in place before the callback page's own script
+                // reads window.opener. Without this the postMessage silently no-ops.
+                // onPageStarted/onPageFinished re-inject as a backstop (guarded).
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    runCatching {
+                        WebViewCompat.addDocumentStartJavaScript(this, OPENER_SHIM_JS, setOf(AUTH_ORIGIN))
+                    }
+                        .onSuccess { onLog("rymk-auth: document-start shim registered") }
+                        .onFailure { onLog("rymk-auth: document-start registration failed (${it.message}); using onPage fallback") }
+                } else {
+                    onLog("rymk-auth: DOCUMENT_START_SCRIPT unsupported; using onPage fallback")
+                }
 
                 webViewClient = object : WebViewClient() {
                     private var done = false
 
-                    override fun onPageFinished(view: WebView, url: String?) {
-                        // OAuth callback landed: the backend set a dollars_auth cookie
-                        // on its own domain — harvest it (CookieManager sees httpOnly).
-                        if (url != null && url.startsWith(Config.OAUTH_CALLBACK_URL)) {
-                            CookieManager.getInstance().flush()
-                            val token = CookieManager.getInstance()
-                                .getCookie(Config.BACKEND_URL)
-                                ?.split(';')
-                                ?.map { it.trim() }
-                                ?.firstOrNull { it.startsWith("dollars_auth=") }
-                                ?.substringAfter('=')
-                                ?.let { java.net.URLDecoder.decode(it, "UTF-8") }
-                            if (!token.isNullOrBlank()) {
-                                onLog("OAuth callback: token captured")
-                                onAuthToken(token)
-                            } else {
-                                onLog("OAuth callback: no dollars_auth cookie found")
-                            }
-                            return
+                    override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                        // Trace the OAuth redirect chain so a stall (bgm.tv second login,
+                        // Cloudflare interstitial, unexpected page) is visible in the log.
+                        if (url != null && (url.startsWith(AUTH_ORIGIN) || url.contains("/oauth/"))) {
+                            onLog("rymk-auth nav: ${url.take(100)}")
                         }
+                        // Backstop for WebView builds without DOCUMENT_START_SCRIPT: plant
+                        // the opener shim as early as we can on auth.ry.mk pages. The
+                        // __rdAuthHook guard makes a double install a no-op.
+                        if (url != null && url.startsWith(AUTH_ORIGIN)) {
+                            view.evaluateJavascript(OPENER_SHIM_JS, null)
+                        }
+                    }
 
+                    override fun onPageFinished(view: WebView, url: String?) {
+                        // Last-chance shim install for auth.ry.mk pages that postMessage
+                        // late (on load rather than during parse). Runs before the done
+                        // gate so it isn't skipped once the session is already captured.
+                        if (url != null && url.startsWith(AUTH_ORIGIN)) {
+                            view.evaluateJavascript(OPENER_SHIM_JS, null)
+                        }
                         if (done) return
                         view.evaluateJavascript(EXTRACT_JS) { raw ->
                             val parsed = parseSession(raw) ?: return@evaluateJavascript
