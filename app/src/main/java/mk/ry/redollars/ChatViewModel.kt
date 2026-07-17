@@ -34,7 +34,13 @@ import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserSearchDto
 import mk.ry.redollars.net.WsUser
 import mk.ry.redollars.voice.VoiceRecorder
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
+import okio.BufferedSink
+import okio.source
 import java.io.File
+import java.io.IOException
 import javax.inject.Inject
 
 data class SessionInfo(val uid: Long, val name: String, val formhash: String)
@@ -395,15 +401,9 @@ class ChatViewModel @Inject constructor(
                     res = readAndUpload(uri)
                     tag = res.url?.let { "[img]$it[/img]" }.orEmpty()
                 } else {
-                    val bytes = withContext(Dispatchers.IO) {
-                        runCatching { appContext.contentResolver.openInputStream(uri)?.use { it.readBytes() } }
-                            .getOrNull()
-                    }
-                    res = when {
-                        bytes == null -> UploadResult(error = "Could not read file")
-                        bytes.size > MAX_FILE_BYTES -> UploadResult(error = "Too large (max 200MB)")
-                        else -> repo.uploadFile(bytes, name, mime)
-                    }
+                    val size = withContext(Dispatchers.IO) { contentLength(uri) }
+                    res = if (size > MAX_FILE_BYTES) UploadResult(error = "Too large (max 200MB)")
+                    else repo.uploadFile(uriRequestBody(uri, mime, size), name)
                     tag = res.url?.let {
                         when {
                             mime.startsWith("video/") -> "[video]$it[/video]"
@@ -489,9 +489,7 @@ class ChatViewModel @Inject constructor(
         voiceDraft = draft
         viewModelScope.launch {
             sendStatus = "Uploading voice…"
-            val bytes = withContext(Dispatchers.IO) { runCatching { file.readBytes() }.getOrNull() }
-            val res = if (bytes == null) UploadResult(error = "Could not read recording")
-            else repo.uploadFile(bytes, file.name, "audio/mp4")
+            val res = repo.uploadFile(file.asRequestBody("audio/mp4".toMediaType()), file.name)
             if (voiceDraft?.file == file) { // still the current draft
                 voiceDraft = draft.copy(url = res.url, error = res.error)
                 sendStatus = if (res.url != null) "Voice ready" else "Voice upload failed: ${res.error}"
@@ -516,9 +514,8 @@ class ChatViewModel @Inject constructor(
     private suspend fun readAndUpload(uri: Uri): UploadResult = withContext(Dispatchers.IO) {
         val resolver = appContext.contentResolver
         val mime = resolver.getType(uri) ?: "image/jpeg"
-        val bytes = runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
-            ?: return@withContext UploadResult(error = "Could not read file")
-        if (bytes.size > MAX_IMAGE_BYTES) return@withContext UploadResult(error = "Too large (max 50MB)")
+        val size = contentLength(uri)
+        if (size > MAX_IMAGE_BYTES) return@withContext UploadResult(error = "Too large (max 50MB)")
         val ext = when (mime) {
             "image/png" -> "png"
             "image/gif" -> "gif"
@@ -528,8 +525,28 @@ class ChatViewModel @Inject constructor(
             "image/heif" -> "heif"
             else -> "jpg"
         }
-        repo.uploadImage(bytes, "image-${System.currentTimeMillis()}.$ext", mime)
+        repo.uploadImage(uriRequestBody(uri, mime, size), "image-${System.currentTimeMillis()}.$ext")
     }
+
+    /** Declared size of a content Uri, or -1 when the provider doesn't say. */
+    private fun contentLength(uri: Uri): Long = runCatching {
+        appContext.contentResolver
+            .query(uri, arrayOf(android.provider.OpenableColumns.SIZE), null, null, null)
+            ?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) else -1L }
+    }.getOrNull() ?: -1L
+
+    /** Streams the Uri into the request on write, so a 200MB pick never sits on the
+     *  heap. Opened per attempt, which also keeps OkHttp retries safe. */
+    private fun uriRequestBody(uri: Uri, mime: String, size: Long): RequestBody =
+        object : RequestBody() {
+            override fun contentType() = mime.toMediaType()
+            override fun contentLength() = size
+            override fun writeTo(sink: BufferedSink) {
+                val input = appContext.contentResolver.openInputStream(uri)
+                    ?: throw IOException("Could not read file")
+                input.source().use { sink.writeAll(it) }
+            }
+        }
 
     // ---- Mention autocomplete (MentionCompleter.tsx parity) ----
 

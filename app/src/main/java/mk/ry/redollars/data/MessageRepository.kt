@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -192,7 +193,9 @@ class MessageRepository @Inject constructor(
                 else -> dto
             }
         }
-    }
+        // The per-row JSON decode in toDto() runs in the collector's context (the
+        // ViewModel's Main); keep the whole mapping off the UI thread.
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected.asStateFlow()
@@ -282,13 +285,13 @@ class MessageRepository @Inject constructor(
      *  (getUploadAuthHeaders in the userscript). */
     private val jwtPattern = Regex("""^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$""")
 
-    /** Upload an image to the upload server. */
-    suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String): UploadResult =
-        uploads.uploadImage(bytes, fileName, mime, authToken?.takeIf { jwtPattern.matches(it) })
+    /** Upload an image to the upload server. [filePart] streams and carries the mime. */
+    suspend fun uploadImage(filePart: okhttp3.RequestBody, fileName: String): UploadResult =
+        uploads.uploadImage(filePart, fileName, authToken?.takeIf { jwtPattern.matches(it) })
 
     /** Upload any non-image file (voice, video, documents) — no auth needed. */
-    suspend fun uploadFile(bytes: ByteArray, fileName: String, mime: String): UploadResult =
-        uploads.uploadFile(bytes, fileName, mime)
+    suspend fun uploadFile(filePart: okhttp3.RequestBody, fileName: String): UploadResult =
+        uploads.uploadFile(filePart, fileName)
 
     // ---- Presence dots (presenceHandlers.ts): track authors in the visible window ----
 

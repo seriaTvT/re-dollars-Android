@@ -6,11 +6,10 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.RequestBody
 import java.util.concurrent.TimeUnit
 
 data class UploadResult(val url: String? = null, val error: String? = null)
@@ -29,23 +28,23 @@ class UploadApi(base: OkHttpClient) {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun uploadImage(bytes: ByteArray, fileName: String, mime: String, token: String?): UploadResult =
-        upload(Config.UPLOAD_API_URL, "image", bytes, fileName, mime, token)
+    /** [filePart] carries its own content type; it is streamed, never buffered whole. */
+    suspend fun uploadImage(filePart: RequestBody, fileName: String, token: String?): UploadResult =
+        upload(Config.UPLOAD_API_URL, "image", filePart, fileName, token)
 
-    suspend fun uploadFile(bytes: ByteArray, fileName: String, mime: String): UploadResult =
-        upload(Config.FILE_UPLOAD_API_URL, "file", bytes, fileName, mime, null)
+    suspend fun uploadFile(filePart: RequestBody, fileName: String): UploadResult =
+        upload(Config.FILE_UPLOAD_API_URL, "file", filePart, fileName, null)
 
     private suspend fun upload(
         endpoint: String,
         field: String,
-        bytes: ByteArray,
+        filePart: RequestBody,
         fileName: String,
-        mime: String,
         token: String?,
     ): UploadResult = withContext(Dispatchers.IO) {
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
-            .addFormDataPart(field, fileName, bytes.toRequestBody(mime.toMediaType()))
+            .addFormDataPart(field, fileName, filePart)
             .build()
         val req = Request.Builder()
             .url(endpoint)
