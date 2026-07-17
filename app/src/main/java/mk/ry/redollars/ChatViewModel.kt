@@ -67,7 +67,8 @@ class ChatViewModel @Inject constructor(
     val notifications: StateFlow<List<NotificationItem>> = repo.notifications
     /** Saved sticker image URLs (favorites tab in the smiley picker). */
     val favorites: StateFlow<List<String>> = repo.favorites
-    /** App-local blocklist; blocked users vanish from list/typing/notifications. */
+    /** Blocklist (Bangumi ignore list ∪ app-local toggles); blocked users vanish
+     *  from list/typing/notifications. */
     val blockedUsers: StateFlow<Set<Long>> = repo.blockedUsers
     /** uids currently online among recently-visible authors (presence dots). */
     val onlineUsers: StateFlow<Set<Long>> = repo.onlineUsers
@@ -221,6 +222,9 @@ class ChatViewModel @Inject constructor(
             if (authReady) registerPush()
         }
     }
+
+    /** Bangumi's data_ignore_users as harvested from a logged-in WebView page. */
+    fun onIgnoreUsers(list: List<String>) = repo.setSiteIgnoreList(list)
 
     /** Host consumed [webViewReloadUrl] (reloaded the WebView); clear the request. */
     fun onWebViewReloaded() {

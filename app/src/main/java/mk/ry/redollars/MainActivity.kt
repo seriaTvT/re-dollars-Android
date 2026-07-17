@@ -208,6 +208,7 @@ private fun RedollarsApp(
                             onLog = vm::externalLog,
                             onPostResult = vm::onWebPostResult,
                             onAuthToken = vm::onAuthToken,
+                            onIgnoreList = vm::onIgnoreUsers,
                             modifier = Modifier.align(Alignment.TopStart),
                         )
                     }

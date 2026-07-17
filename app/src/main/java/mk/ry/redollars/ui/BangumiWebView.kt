@@ -17,6 +17,7 @@ import androidx.webkit.WebViewFeature
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import mk.ry.redollars.SessionInfo
@@ -32,6 +33,17 @@ private const val EXTRACT_JS = """
       formhash: fh ? fh.value : null,
       name: (typeof CHOBITS_USERNAME !== 'undefined') ? CHOBITS_USERNAME : null
     });
+  } catch (e) { return null; }
+})();
+"""
+
+/** Bangumi renders its ignore list into logged-in pages as the `data_ignore_users`
+ *  global (mixed usernames and uids) — the same source user.ts reads on the web. */
+private const val IGNORE_JS = """
+(function(){
+  try {
+    if (typeof data_ignore_users === 'undefined' || !data_ignore_users) return null;
+    return JSON.stringify(Array.prototype.map.call(data_ignore_users, String));
   } catch (e) { return null; }
 })();
 """
@@ -91,6 +103,17 @@ private fun parseSession(raw: String): Parsed? {
     return Parsed(uid, name, formhash)
 }
 
+/** Unwraps the double-encoded IGNORE_JS result into the raw ignore-list entries.
+ *  null (not empty) when the global is absent, so a logged-out page is a no-op. */
+private fun parseIgnoreList(raw: String): List<String>? {
+    val el = runCatching { AppJson.parseToJsonElement(raw) }.getOrNull() ?: return null
+    val inner = (el as? JsonPrimitive)?.contentOrNull ?: return null
+    if (inner == "null" || inner.isBlank()) return null
+    return runCatching {
+        AppJson.parseToJsonElement(inner).jsonArray.map { it.jsonPrimitive.content }
+    }.getOrNull()
+}
+
 private data class AuthMessage(val ok: Boolean, val token: String?, val state: String?)
 
 /** Parses a rymk-auth postMessage payload: `{type:'rymk_auth', ok, token, state}`. */
@@ -139,6 +162,7 @@ fun BangumiWebView(
     onLog: (String) -> Unit,
     onPostResult: (String) -> Unit,
     onAuthToken: (String, String?) -> Unit = { _, _ -> },
+    onIgnoreList: (List<String>) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     AndroidView(
@@ -214,6 +238,13 @@ fun BangumiWebView(
                         // gate so it isn't skipped once the session is already captured.
                         if (url != null && url.startsWith(AUTH_ORIGIN)) {
                             view.evaluateJavascript(OPENER_SHIM_JS, null)
+                        }
+                        // Harvest the site ignore list from any logged-in Bangumi page
+                        // (also after `done`: the post-auth reload to /dollars lands here).
+                        if (url != null && url.startsWith(Config.BGM_HOST) && !url.contains("/oauth/")) {
+                            view.evaluateJavascript(IGNORE_JS) { raw ->
+                                parseIgnoreList(raw)?.let(onIgnoreList)
+                            }
                         }
                         if (done) return
                         // Skip the OAuth redirect chain: auth.ry.mk and bgm.tv/oauth/*

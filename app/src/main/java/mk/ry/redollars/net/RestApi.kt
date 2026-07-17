@@ -2,6 +2,10 @@ package mk.ry.redollars.net
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -291,6 +295,33 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
+    /** POST /api/v1/users/lookup-by-name {usernames} — resolve Bangumi usernames to
+     *  uids (the site ignore list stores usernames; messages carry uids). Unknown
+     *  names come back as null entries and are dropped. */
+    suspend fun lookupUsersByName(usernames: List<String>): Map<String, Long> = withContext(Dispatchers.IO) {
+        if (usernames.isEmpty()) return@withContext emptyMap()
+        val payload = AppJson.encodeToString(LookupByNameRequest.serializer(), LookupByNameRequest(usernames))
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/users/lookup-by-name")
+            .header("User-Agent", Config.USER_AGENT)
+            .post(payload.toRequestBody(jsonMedia))
+            .build()
+        client.newCall(req).execute().use { res ->
+            val body = res.body?.string().orEmpty()
+            if (!res.isSuccessful || body.isBlank()) return@withContext emptyMap()
+            runCatching {
+                val data = AppJson.parseToJsonElement(body).jsonObject["data"]?.jsonObject
+                    ?: return@runCatching emptyMap<String, Long>()
+                buildMap {
+                    for ((name, value) in data) {
+                        val id = (value as? JsonObject)?.get("id")?.jsonPrimitive?.longOrNull ?: continue
+                        put(name, id)
+                    }
+                }
+            }.getOrDefault(emptyMap())
+        }
+    }
+
     /** POST /api/v1/push/register {token, platform} — bind our FCM token to this account. */
     suspend fun registerPush(fcmToken: String, authToken: String): Boolean = withContext(Dispatchers.IO) {
         val payload = AppJson.encodeToString(
@@ -321,6 +352,9 @@ private data class FavoriteRequest(
 
 @kotlinx.serialization.Serializable
 private data class EditRequest(val content: String)
+
+@kotlinx.serialization.Serializable
+private data class LookupByNameRequest(val usernames: List<String>)
 
 @kotlinx.serialization.Serializable
 private data class ReactionToggleRequest(

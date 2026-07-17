@@ -34,6 +34,7 @@ import mk.ry.redollars.net.UploadResult
 import mk.ry.redollars.net.UserProfileDto
 import mk.ry.redollars.net.UserSearchDto
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
@@ -63,30 +64,96 @@ class MessageRepository @Inject constructor(
     /** How many of the newest cached rows the UI shows; grows as the user pages up. */
     private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
 
-    // ---- Blocked users: app-local list; Room keeps the rows, display filters them ----
-    // (The web mirrors Bangumi's data_ignore_users; here the list is managed in-app.)
+    // ---- Blocked users: Bangumi's ignore list (data_ignore_users, harvested from the
+    // logged-in WebView page like user.ts reads it on the web) unioned with an
+    // app-local list toggled from the profile sheet. Room keeps the rows, display
+    // filters them. Both sets persist so blocked users stay hidden on cold start. ----
 
     private val blockListSerializer = ListSerializer(Long.serializer())
+    private val nameCacheSerializer = MapSerializer(String.serializer(), Long.serializer())
 
-    private val _blockedUsers = MutableStateFlow(loadBlockedCache())
+    private val _localBlocked = MutableStateFlow(loadUidSet(PREF_BLOCKED))
+    private val _siteBlocked = MutableStateFlow(loadUidSet(PREF_SITE_BLOCKED))
+
+    /** Union of the site ignore list and the app-local list; what the UI filters by. */
+    private val _blockedUsers = MutableStateFlow(_localBlocked.value + _siteBlocked.value)
     val blockedUsers: StateFlow<Set<Long>> = _blockedUsers.asStateFlow()
 
-    private fun loadBlockedCache(): Set<Long> =
-        prefs.getString(PREF_BLOCKED, null)
+    private fun loadUidSet(key: String): Set<Long> =
+        prefs.getString(key, null)
             ?.let { runCatching { AppJson.decodeFromString(blockListSerializer, it) }.getOrNull() }
             ?.toSet() ?: emptySet()
 
-    fun setBlocked(uid: Long, blocked: Boolean) {
-        val next = if (blocked) _blockedUsers.value + uid else _blockedUsers.value - uid
-        _blockedUsers.value = next
+    private fun persistUidSet(key: String, set: Set<Long>) {
         prefs.edit()
-            .putString(PREF_BLOCKED, AppJson.encodeToString(blockListSerializer, next.toList()))
+            .putString(key, AppJson.encodeToString(blockListSerializer, set.toList()))
             .apply()
-        if (blocked) {
-            clearTyping(uid)
-            _notifications.value = _notifications.value.filterNot { it.uid == uid }
+    }
+
+    fun setBlocked(uid: Long, blocked: Boolean) {
+        _localBlocked.value = if (blocked) _localBlocked.value + uid else _localBlocked.value - uid
+        persistUidSet(PREF_BLOCKED, _localBlocked.value)
+        if (!blocked && uid in _siteBlocked.value) {
+            // Unblocking must also win over the site list, or nothing changes on
+            // screen. The next ignore-list harvest re-applies it if the user is
+            // still ignored on Bangumi itself.
+            _siteBlocked.value = _siteBlocked.value - uid
+            persistUidSet(PREF_SITE_BLOCKED, _siteBlocked.value)
+        }
+        onBlockedChanged()
+    }
+
+    /** Recompute the union and evict newly-blocked users from typing/notifications. */
+    private fun onBlockedChanged() {
+        val all = _localBlocked.value + _siteBlocked.value
+        if (all == _blockedUsers.value) return
+        _blockedUsers.value = all
+        _typingUsers.value.map { it.id }.filter { it in all }.forEach(::clearTyping)
+        _notifications.value = _notifications.value.filterNot { it.uid in all }
+    }
+
+    /**
+     * Apply Bangumi's `data_ignore_users` (mixed uids and usernames). Usernames
+     * resolve to uids through the backend, behind a persistent username→uid cache
+     * so repeat launches skip the network (initializeBlockedUsers in user.ts).
+     */
+    fun setSiteIgnoreList(raw: List<String>) {
+        scope.launch {
+            val uids = mutableSetOf<Long>()
+            val cache = loadNameCache().toMutableMap()
+            val unresolved = mutableListOf<String>()
+            for (entry in raw.map { it.trim() }.filter { it.isNotEmpty() }) {
+                val numeric = entry.toLongOrNull()
+                when {
+                    numeric != null -> uids.add(numeric)
+                    entry in cache -> uids.add(cache.getValue(entry))
+                    else -> unresolved.add(entry)
+                }
+            }
+            if (unresolved.isNotEmpty()) {
+                val resolved = runCatching { rest.lookupUsersByName(unresolved) }
+                    .getOrDefault(emptyMap())
+                if (resolved.isNotEmpty()) {
+                    uids.addAll(resolved.values)
+                    cache.putAll(resolved)
+                    prefs.edit()
+                        .putString(PREF_NAME_CACHE, AppJson.encodeToString(nameCacheSerializer, cache))
+                        .apply()
+                }
+            }
+            if (uids != _siteBlocked.value) {
+                _siteBlocked.value = uids
+                persistUidSet(PREF_SITE_BLOCKED, uids)
+                onBlockedChanged()
+                log("Ignore list: ${uids.size} user(s) blocked via Bangumi")
+            }
         }
     }
+
+    private fun loadNameCache(): Map<String, Long> =
+        prefs.getString(PREF_NAME_CACHE, null)
+            ?.let { runCatching { AppJson.decodeFromString(nameCacheSerializer, it) }.getOrNull() }
+            ?: emptyMap()
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val messages: Flow<List<MessageDto>> = kotlinx.coroutines.flow.combine(
@@ -526,5 +593,9 @@ class MessageRepository @Inject constructor(
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
         const val PREF_FAVORITES = "sticker_favorites"
         const val PREF_BLOCKED = "blocked_users"
+        /** Resolved uids from Bangumi's data_ignore_users (refreshed on each harvest). */
+        const val PREF_SITE_BLOCKED = "site_blocked_users"
+        /** username→uid cache for ignore-list entries (dollars_blocked_cache parity). */
+        const val PREF_NAME_CACHE = "blocked_name_cache"
     }
 }
