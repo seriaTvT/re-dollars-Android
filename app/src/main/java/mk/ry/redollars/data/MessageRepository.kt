@@ -64,20 +64,33 @@ class MessageRepository @Inject constructor(
     /** How many of the newest cached rows the UI shows; grows as the user pages up. */
     private val displayLimit = MutableStateFlow(INITIAL_WINDOW)
 
-    // ---- Blocked users: Bangumi's ignore list (data_ignore_users, harvested from the
-    // logged-in WebView page like user.ts reads it on the web) unioned with an
-    // app-local list toggled from the profile sheet. Room keeps the rows, display
-    // filters them. Both sets persist so blocked users stay hidden on cold start. ----
+    // ---- Blocked users: two separately-managed lists, persisted so blocked users
+    // stay hidden on cold start. Room keeps the rows, display filters them.
+    //  * RD (app-local) list: toggled from the profile sheet, unblockable for good.
+    //  * Bangumi list: data_ignore_users harvested from the logged-in WebView page
+    //    (as user.ts reads it on the web). Owned by the site — the app can only lift
+    //    a block *locally* via an override; the site's ignore list is never touched.
 
     private val blockListSerializer = ListSerializer(Long.serializer())
     private val nameCacheSerializer = MapSerializer(String.serializer(), Long.serializer())
 
     private val _localBlocked = MutableStateFlow(loadUidSet(PREF_BLOCKED))
     private val _siteBlocked = MutableStateFlow(loadUidSet(PREF_SITE_BLOCKED))
+    private val _siteUnblocked = MutableStateFlow(loadUidSet(PREF_SITE_UNBLOCKED))
 
-    /** Union of the site ignore list and the app-local list; what the UI filters by. */
-    private val _blockedUsers = MutableStateFlow(_localBlocked.value + _siteBlocked.value)
+    /** App-local (RD) blocklist. */
+    val localBlockedUsers: StateFlow<Set<Long>> = _localBlocked.asStateFlow()
+    /** Bangumi's ignore list as last harvested. */
+    val siteBlockedUsers: StateFlow<Set<Long>> = _siteBlocked.asStateFlow()
+    /** Site-ignored uids whose block the user lifted app-side only. */
+    val siteUnblockedUsers: StateFlow<Set<Long>> = _siteUnblocked.asStateFlow()
+
+    /** What the UI filters by: local ∪ (site − app-side overrides). */
+    private val _blockedUsers = MutableStateFlow(effectiveBlocked())
     val blockedUsers: StateFlow<Set<Long>> = _blockedUsers.asStateFlow()
+
+    private fun effectiveBlocked(): Set<Long> =
+        _localBlocked.value + (_siteBlocked.value - _siteUnblocked.value)
 
     private fun loadUidSet(key: String): Set<Long> =
         prefs.getString(key, null)
@@ -90,22 +103,25 @@ class MessageRepository @Inject constructor(
             .apply()
     }
 
+    /** Toggle the app-local (RD) block for [uid]. */
     fun setBlocked(uid: Long, blocked: Boolean) {
         _localBlocked.value = if (blocked) _localBlocked.value + uid else _localBlocked.value - uid
         persistUidSet(PREF_BLOCKED, _localBlocked.value)
-        if (!blocked && uid in _siteBlocked.value) {
-            // Unblocking must also win over the site list, or nothing changes on
-            // screen. The next ignore-list harvest re-applies it if the user is
-            // still ignored on Bangumi itself.
-            _siteBlocked.value = _siteBlocked.value - uid
-            persistUidSet(PREF_SITE_BLOCKED, _siteBlocked.value)
-        }
         onBlockedChanged()
     }
 
-    /** Recompute the union and evict newly-blocked users from typing/notifications. */
+    /** Lift (or restore) a Bangumi-side block, app-only: the site's ignore list is
+     *  untouched and later harvests keep respecting the override. */
+    fun setSiteUnblocked(uid: Long, unblocked: Boolean) {
+        _siteUnblocked.value =
+            if (unblocked) _siteUnblocked.value + uid else _siteUnblocked.value - uid
+        persistUidSet(PREF_SITE_UNBLOCKED, _siteUnblocked.value)
+        onBlockedChanged()
+    }
+
+    /** Recompute the effective set and evict newly-blocked users from typing/notifications. */
     private fun onBlockedChanged() {
-        val all = _localBlocked.value + _siteBlocked.value
+        val all = effectiveBlocked()
         if (all == _blockedUsers.value) return
         _blockedUsers.value = all
         _typingUsers.value.map { it.id }.filter { it in all }.forEach(::clearTyping)
@@ -144,6 +160,12 @@ class MessageRepository @Inject constructor(
             if (uids != _siteBlocked.value) {
                 _siteBlocked.value = uids
                 persistUidSet(PREF_SITE_BLOCKED, uids)
+                // Overrides only make sense for users still on the site list.
+                val overrides = _siteUnblocked.value intersect uids
+                if (overrides != _siteUnblocked.value) {
+                    _siteUnblocked.value = overrides
+                    persistUidSet(PREF_SITE_UNBLOCKED, overrides)
+                }
                 onBlockedChanged()
                 log("Ignore list: ${uids.size} user(s) blocked via Bangumi")
             }
@@ -595,6 +617,8 @@ class MessageRepository @Inject constructor(
         const val PREF_BLOCKED = "blocked_users"
         /** Resolved uids from Bangumi's data_ignore_users (refreshed on each harvest). */
         const val PREF_SITE_BLOCKED = "site_blocked_users"
+        /** App-side overrides: site-ignored uids whose block the user lifted locally. */
+        const val PREF_SITE_UNBLOCKED = "site_unblocked_users"
         /** username→uid cache for ignore-list entries (dollars_blocked_cache parity). */
         const val PREF_NAME_CACHE = "blocked_name_cache"
     }

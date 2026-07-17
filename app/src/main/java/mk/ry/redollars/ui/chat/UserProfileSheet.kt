@@ -141,9 +141,10 @@ fun UserProfileSheet(
                     },
                 ) { Text("在 Bangumi 查看") }
                 if (canBlock) {
+                    // RD = the app-local blocklist; Bangumi-side blocks live in 屏蔽管理.
                     OutlinedButton(onClick = onToggleBlock) {
                         Text(
-                            text = if (blocked) "取消屏蔽" else "屏蔽",
+                            text = if (blocked) "取消 RD 屏蔽" else "RD 屏蔽",
                             color = if (blocked) cs.primary else cs.error,
                         )
                     }

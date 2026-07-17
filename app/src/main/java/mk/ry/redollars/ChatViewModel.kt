@@ -67,9 +67,15 @@ class ChatViewModel @Inject constructor(
     val notifications: StateFlow<List<NotificationItem>> = repo.notifications
     /** Saved sticker image URLs (favorites tab in the smiley picker). */
     val favorites: StateFlow<List<String>> = repo.favorites
-    /** Blocklist (Bangumi ignore list ∪ app-local toggles); blocked users vanish
-     *  from list/typing/notifications. */
+    /** Effective blocklist (RD local ∪ (Bangumi − app-side overrides)); blocked
+     *  users vanish from list/typing/notifications. */
     val blockedUsers: StateFlow<Set<Long>> = repo.blockedUsers
+    /** App-local (RD) blocklist — the profile-sheet toggle. */
+    val localBlockedUsers: StateFlow<Set<Long>> = repo.localBlockedUsers
+    /** Bangumi's ignore list as harvested from the site. */
+    val siteBlockedUsers: StateFlow<Set<Long>> = repo.siteBlockedUsers
+    /** Site-ignored uids whose block was lifted app-side only. */
+    val siteUnblockedUsers: StateFlow<Set<Long>> = repo.siteUnblockedUsers
     /** uids currently online among recently-visible authors (presence dots). */
     val onlineUsers: StateFlow<Set<Long>> = repo.onlineUsers
 
@@ -611,12 +617,18 @@ class ChatViewModel @Inject constructor(
     /** Resolve a profile for the profile sheet (backend user cache). */
     suspend fun loadProfile(uid: Long) = repo.fetchUserProfile(uid)
 
-    /** Block/unblock from the profile sheet. */
+    /** RD (app-local) block/unblock from the profile sheet. */
     fun toggleBlock(uid: Long) {
-        val nowBlocked = uid !in repo.blockedUsers.value
+        val nowBlocked = uid !in repo.localBlockedUsers.value
         repo.setBlocked(uid, nowBlocked)
-        sendStatus = if (nowBlocked) "已屏蔽该用户" else "已取消屏蔽"
+        sendStatus = if (nowBlocked) "已 RD 屏蔽该用户" else "已取消 RD 屏蔽"
     }
+
+    /** Remove a user from the RD (app-local) blocklist (block manager). */
+    fun unblockLocal(uid: Long) = repo.setBlocked(uid, false)
+
+    /** Lift/restore a Bangumi-side block app-only; the site's ignore list stays as-is. */
+    fun setSiteUnblocked(uid: Long, unblocked: Boolean) = repo.setSiteUnblocked(uid, unblocked)
 
     /** Full-text search page (search sheet). */
     suspend fun searchMessages(query: String, offset: Int) = repo.searchMessages(query, offset)

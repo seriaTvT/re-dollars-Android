@@ -88,6 +88,7 @@ fun ChatScreen(
     var showNotifications by rememberSaveable { mutableStateOf(false) }
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var showGallery by rememberSaveable { mutableStateOf(false) }
+    var showBlockManager by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -99,6 +100,7 @@ fun ChatScreen(
                 onToggleDebug = { showDebug = !showDebug },
                 onSearch = { showSearch = true },
                 onGallery = { showGallery = true },
+                onBlockManager = { showBlockManager = true },
                 onNotifications = { showNotifications = true },
                 // Logged in: open the account sheet (status + logout). Logged out: the
                 // login WebView, as before.
@@ -169,6 +171,20 @@ fun ChatScreen(
     if (showGallery) {
         GallerySheet(fetch = vm::fetchGallery, onDismiss = { showGallery = false })
     }
+    if (showBlockManager) {
+        val localBlocked by vm.localBlockedUsers.collectAsState()
+        val siteBlocked by vm.siteBlockedUsers.collectAsState()
+        val siteUnblocked by vm.siteUnblockedUsers.collectAsState()
+        BlockManagerSheet(
+            localBlocked = localBlocked,
+            siteBlocked = siteBlocked,
+            siteUnblocked = siteUnblocked,
+            onUnblockLocal = vm::unblockLocal,
+            onSetSiteUnblocked = vm::setSiteUnblocked,
+            loadProfile = vm::loadProfile,
+            onDismiss = { showBlockManager = false },
+        )
+    }
 
     if (vm.showAccount) {
         vm.session?.let { s ->
@@ -183,11 +199,13 @@ fun ChatScreen(
     }
 
     vm.profileUid?.let { uid ->
-        val blockedUsers by vm.blockedUsers.collectAsState()
+        // The profile button toggles the RD (app-local) list only; Bangumi-side
+        // blocks are managed in the 屏蔽管理 sheet.
+        val localBlocked by vm.localBlockedUsers.collectAsState()
         UserProfileSheet(
             uid = uid,
             online = uid in onlineUsers,
-            blocked = uid in blockedUsers,
+            blocked = uid in localBlocked,
             canBlock = uid != vm.session?.uid,
             onToggleBlock = { vm.toggleBlock(uid) },
             loadProfile = vm::loadProfile,
@@ -218,6 +236,7 @@ private fun ChatTopBar(
     onToggleDebug: () -> Unit,
     onSearch: () -> Unit,
     onGallery: () -> Unit,
+    onBlockManager: () -> Unit,
     onNotifications: () -> Unit,
     onAccount: () -> Unit,
 ) {
@@ -261,6 +280,13 @@ private fun ChatTopBar(
                         onClick = {
                             showMenu = false
                             onGallery()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("屏蔽管理") },
+                        onClick = {
+                            showMenu = false
+                            onBlockManager()
                         },
                     )
                     DropdownMenuItem(
