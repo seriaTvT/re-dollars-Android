@@ -125,6 +125,11 @@ private fun simplifyQuoteInner(s: String): String = s
 
 private enum class St { BOLD, ITALIC, UNDERLINE, STRIKE, MASK, LINK }
 
+/** Only web URLs become tappable: any other scheme (intent:, tel:, app deep links)
+ *  could jump out of the app behind a disguised label, so it stays plain text. */
+private fun isHttpUrl(s: String) =
+    s.startsWith("http://", ignoreCase = true) || s.startsWith("https://", ignoreCase = true)
+
 private val INLINE_REGEX = Regex(
     "\\[b\\]([\\s\\S]*?)\\[/b\\]" +                              // 1
         "|\\[i\\]([\\s\\S]*?)\\[/i\\]" +                        // 2
@@ -207,8 +212,15 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
                 g[3] != null -> walk(b, g[3]!!.value, styles + St.UNDERLINE)
                 g[4] != null -> walk(b, g[4]!!.value, styles + St.STRIKE)
                 g[5] != null -> walk(b, g[5]!!.value, styles + St.MASK)
-                g[7] != null -> b.withLink(LinkAnnotation.Url(g[6]!!.value)) {
-                    walk(this, g[7]!!.value, styles + St.LINK)
+                g[7] != null -> {
+                    val href = g[6]!!.value.trim()
+                    if (isHttpUrl(href)) {
+                        b.withLink(LinkAnnotation.Url(href)) {
+                            walk(this, g[7]!!.value, styles + St.LINK)
+                        }
+                    } else {
+                        walk(b, g[7]!!.value, styles)
+                    }
                 }
                 g[9] != null -> b.withLink(LinkAnnotation.Url("https://bgm.tv/user/${g[8]!!.value}")) {
                     appendStyled(this, "@" + g[9]!!.value, styles + St.LINK)
@@ -384,6 +396,10 @@ private fun CodeView(content: String) {
 
 @Composable
 private fun LinkLine(label: String, url: String) {
+    if (!isHttpUrl(url)) {
+        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 2.dp))
+        return
+    }
     val cs = MaterialTheme.colorScheme
     val anno = remember(label, url, cs.primary) {
         buildAnnotatedString {

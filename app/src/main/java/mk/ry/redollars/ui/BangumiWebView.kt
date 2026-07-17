@@ -1,9 +1,12 @@
 package mk.ry.redollars.ui
 
 import android.annotation.SuppressLint
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.fillMaxSize
@@ -88,6 +91,18 @@ private const val OPENER_SHIM_JS = """
 """
 
 private const val AUTH_ORIGIN = "https://auth.ry.mk"
+
+/** Hosts this WebView may navigate to: the Bangumi mirrors (login, posting, the OAuth
+ *  chain) and the rymk-auth server. Everything else leaves for the real browser, so a
+ *  foreign page never runs with the AndroidPost/AndroidAuth bridges or the logged-in
+ *  Bangumi cookie jar attached. */
+private val ALLOWED_NAV_HOSTS = setOf("bgm.tv", "bangumi.tv", "chii.in", "auth.ry.mk")
+
+private fun isAllowedNavigation(uri: Uri): Boolean {
+    if (uri.scheme != "http" && uri.scheme != "https") return false
+    val host = uri.host?.lowercase() ?: return false
+    return host in ALLOWED_NAV_HOSTS || ALLOWED_NAV_HOSTS.any { host.endsWith(".$it") }
+}
 
 private data class Parsed(val uid: Long?, val name: String?, val formhash: String?)
 
@@ -211,6 +226,24 @@ fun BangumiWebView(
 
                 webViewClient = object : WebViewClient() {
                     private var done = false
+
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): Boolean {
+                        val uri = request.url
+                        if (isAllowedNavigation(uri)) return false
+                        // Foreign http(s) links open in the browser; other schemes
+                        // (intent:, tel:, custom app links) are dropped outright.
+                        if (uri.scheme == "http" || uri.scheme == "https") {
+                            runCatching {
+                                view.context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }
+                        }
+                        return true
+                    }
 
                     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                         // A fresh login always (re)starts at the Bangumi login page — logout
