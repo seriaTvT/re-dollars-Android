@@ -60,6 +60,7 @@ class DollarsWs(
     private var active = true
     private var intentionallyClosed = false
     private var attempt = 0
+    private var lastPongAt = 0L
 
     /** [name]/[avatar] enable presence sharing (`join`): the server then attributes our
      *  typing/presence frames. Without them we stay an identified-but-anonymous reader. */
@@ -71,6 +72,13 @@ class DollarsWs(
         attempt = 0
         reconnectJob?.cancel(); reconnectJob = null
         open()
+    }
+
+    /** Re-identify with current uid without full reconnect, for token refresh */
+    fun reidentify() {
+        if (currentSocket != null && !intentionallyClosed) {
+            currentSocket?.send("{\"type\":\"identify\",\"uid\":\"$uid\"}")
+        }
     }
 
     /** Broadcast our typing state (server attaches the joined user identity). */
@@ -95,15 +103,18 @@ class DollarsWs(
         uids.joinToString(",", "[", "]") { "\"$it\"" }
 
     /** Foreground/background toggle: pause heartbeat when hidden, resume/reconnect when shown. */
+    /** Foreground/background toggle: quiesce socket when backgrounded. */
     fun setActive(active: Boolean) {
         if (this.active == active) return
         this.active = active
-        currentSocket?.send("""{"type":"presence","open":$active}""")
+        currentSocket?.send("{\"type\":\"presence\",\"open\":$active}")
         if (active) {
             if (currentSocket == null && !intentionallyClosed) open() else startHeartbeat()
         } else {
             stopHeartbeat()
             reconnectJob?.cancel(); reconnectJob = null
+            currentSocket?.close(1000, "background")
+            currentSocket = null
         }
     }
 
@@ -121,6 +132,7 @@ class DollarsWs(
             .header("User-Agent", Config.USER_AGENT)
             .build()
         // Replacing currentSocket makes any prior socket's callbacks stale (ignored below).
+        currentSocket?.close(1000, "reconnect")
         currentSocket = client.newWebSocket(req, listener)
     }
 
@@ -128,10 +140,16 @@ class DollarsWs(
         if (intentionallyClosed || !active) return
         reconnectJob?.cancel()
         attempt++
-        val backoff = (1000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000L) // 2s,4s,…,30s cap
+        // Exponential backoff with full jitter: base 2s, cap 60s, jitter 0-1000ms + decorrelated
+        val base = (1000L shl attempt.coerceAtMost(6)).coerceAtMost(60_000L)
+        val jitter = Random.nextLong(0, 1000) + Random.nextLong(0, base / 4)
+        val backoff = (base + jitter).coerceAtMost(60_000L)
+        // Circuit breaker: after 10 attempts, pause 2 minutes
+        val isCircuitOpen = attempt > 10
+        val finalDelay = if (isCircuitOpen) 120_000L else backoff
         reconnectJob = scope.launch {
-            onEvent(WsEvent.Log("WS reconnect in ${backoff}ms (attempt $attempt)"))
-            delay(backoff + Random.nextLong(0, 400))
+            onEvent(WsEvent.Log("WS reconnect in ${finalDelay}ms (attempt $attempt${if (isCircuitOpen) " circuit-open" else ""})"))
+            delay(finalDelay)
             if (!intentionallyClosed && active) open()
         }
     }
@@ -141,7 +159,20 @@ class DollarsWs(
         heartbeat = scope.launch {
             while (isActive) {
                 delay(Config.HEARTBEAT_INTERVAL_MS)
-                currentSocket?.send("""{"type":"ping"}""")
+                val socket = currentSocket ?: break
+                // No pong for two intervals means the link is dead even when no TCP
+                // error surfaces (silent NAT drop); reconnect instead of pinging a
+                // black hole and relying on the shared client's read timeout.
+                if (System.currentTimeMillis() - lastPongAt > Config.HEARTBEAT_STALE_MS) {
+                    onEvent(WsEvent.Log("WS stale (no pong) — reconnecting"))
+                    currentSocket = null
+                    socket.close(1000, "stale")
+                    stopHeartbeat()
+                    onEvent(WsEvent.Status(false))
+                    scheduleReconnect()
+                    break
+                }
+                socket.send("""{"type":"ping"}""")
             }
         }
     }
@@ -161,6 +192,7 @@ class DollarsWs(
         override fun onOpen(webSocket: WebSocket, response: Response) {
             if (webSocket !== currentSocket) return
             attempt = 0
+            lastPongAt = System.currentTimeMillis()
             onEvent(WsEvent.Status(true))
             onEvent(WsEvent.Log("WS open -> identify uid=$uid join=${joinName != null}"))
             webSocket.send("""{"type":"identify","uid":"$uid"}""")
@@ -263,7 +295,7 @@ class DollarsWs(
                         ?.let { onEvent(WsEvent.Presence(listOf(it))) }
                 }
 
-                "pong" -> { /* heartbeat ack */ }
+                "pong" -> { lastPongAt = System.currentTimeMillis() }
                 else -> { /* unhandled frame types */ }
             }
         }

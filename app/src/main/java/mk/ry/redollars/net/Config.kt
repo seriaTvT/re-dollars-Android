@@ -1,5 +1,7 @@
 package mk.ry.redollars.net
 
+import mk.ry.redollars.BuildConfig
+
 /** Ported from re-dollars-preact/src/utils/constants.ts */
 object Config {
     const val BACKEND_URL = "https://rd.ry.mk"
@@ -48,8 +50,9 @@ object Config {
     const val UPLOAD_API_URL = "$UPLOAD_BASE_URL/api/upload"
     const val FILE_UPLOAD_API_URL = "$UPLOAD_API_URL/file"
 
-    const val USER_AGENT =
-        "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/0.2"
+    /** Tracks the app version so the backend can tell clients apart in its logs. */
+    val USER_AGENT: String
+        get() = "Mozilla/5.0 (Linux; Android) ReDollarsAndroid/${BuildConfig.VERSION_NAME}"
 
     /** BMO assets live on the Bangumi site itself; bgm.tv sits behind Cloudflare,
      *  which rejects non-browser user agents — fetch them with a desktop browser UA
@@ -60,6 +63,8 @@ object Config {
     const val BMO_MANIFEST_URL = "$BMO_BASE_URL/js/lib/bmo/assets/manifest.local.json"
 
     const val HEARTBEAT_INTERVAL_MS = 25_000L
+    /** No pong for this long = dead link; force a reconnect (see DollarsWs heartbeat). */
+    const val HEARTBEAT_STALE_MS = HEARTBEAT_INTERVAL_MS * 2
     const val RECONNECT_DELAY_MS = 2_000L
 
     fun avatarUrl(raw: String): String =

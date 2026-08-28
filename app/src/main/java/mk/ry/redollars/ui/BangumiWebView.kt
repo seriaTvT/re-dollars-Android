@@ -86,7 +86,7 @@ private const val OPENER_SHIM_JS = """
   } catch (e) {
     try { window.opener = shim; } catch (e2) { jlog('opener install failed: ' + e2); }
   }
-  jlog('opener shim installed @ ' + location.href);
+  jlog('opener shim installed @ ' + location.origin + location.pathname);
 })();
 """
 
@@ -97,12 +97,29 @@ private const val AUTH_ORIGIN = "https://auth.ry.mk"
  *  foreign page never runs with the AndroidPost/AndroidAuth bridges or the logged-in
  *  Bangumi cookie jar attached. */
 private val ALLOWED_NAV_HOSTS = setOf("bgm.tv", "bangumi.tv", "chii.in", "auth.ry.mk")
+private val BANGUMI_BRIDGE_HOSTS = setOf("bgm.tv", "bangumi.tv", "chii.in")
 
 private fun isAllowedNavigation(uri: Uri): Boolean {
     if (uri.scheme != "http" && uri.scheme != "https") return false
     val host = uri.host?.lowercase() ?: return false
     return host in ALLOWED_NAV_HOSTS || ALLOWED_NAV_HOSTS.any { host.endsWith(".$it") }
 }
+
+/** Exact origin checks used by JavaScript bridges. These are deliberately stricter
+ * than the navigation allowlist: a malicious lookalike host must never receive a
+ * bridge callback. */
+private fun isAuthOrigin(uri: Uri): Boolean =
+    uri.scheme.equals("https", ignoreCase = true) &&
+        uri.host.equals("auth.ry.mk", ignoreCase = true) &&
+        (uri.port == -1 || uri.port == 443)
+
+private fun isBangumiOrigin(uri: Uri): Boolean =
+    (uri.scheme.equals("https", ignoreCase = true) || uri.scheme.equals("http", ignoreCase = true)) &&
+        uri.host?.lowercase() in BANGUMI_BRIDGE_HOSTS &&
+        (uri.port == -1 || uri.port == 80 || uri.port == 443)
+
+private fun parseUrl(url: String?): Uri? =
+    url?.let { runCatching { Uri.parse(it) }.getOrNull() }
 
 private data class Parsed(val uid: Long?, val name: String?, val formhash: String?)
 
@@ -142,24 +159,44 @@ private fun parseAuthMessage(raw: String): AuthMessage? {
     )
 }
 
-/** Bridge so the in-page fetch() can report its async result back to Kotlin. */
-private class PostBridge(private val cb: (String) -> Unit) {
+/** Bridge so the in-page fetch() can report its async result back to Kotlin. JavaScript
+ * interface methods are not guaranteed to run on the WebView UI thread, so even the
+ * origin check is posted before touching WebView state. */
+private class PostBridge(private val view: WebView, private val cb: (String) -> Unit) {
     @JavascriptInterface
-    fun deliver(json: String) = cb(json)
+    fun deliver(json: String) {
+        view.post {
+            val uri = parseUrl(view.url) ?: return@post
+            if (!isBangumiOrigin(uri)) return@post
+            cb(json)
+        }
+    }
 }
 
 /** Bridge for the rymk-auth flow. [onMessage] receives the postMessage payload from the
- *  opener shim; [onDiag] surfaces the shim's own trace into the debug log. Both fire on a
- *  JS/binder thread, so the ViewModel marshals onto Main before touching state. */
+ * opener shim; [onDiag] surfaces the shim's own trace into the debug log. Both callbacks,
+ * plus the WebView URL check, are marshalled to the UI thread here. */
 private class AuthBridge(
+    private val view: WebView,
     private val onMessage: (String) -> Unit,
     private val onDiag: (String) -> Unit,
 ) {
     @JavascriptInterface
-    fun deliver(json: String) = onMessage(json)
+    fun deliver(json: String) {
+        view.post {
+            val uri = parseUrl(view.url) ?: return@post
+            if (!isAuthOrigin(uri)) {
+                onDiag("rymk-auth bridge ignored message from ${uri.scheme}://${uri.host}${uri.path.orEmpty()}")
+                return@post
+            }
+            onMessage(json)
+        }
+    }
 
     @JavascriptInterface
-    fun log(msg: String) = onDiag(msg)
+    fun log(msg: String) {
+        view.post { onDiag(msg.take(300)) }
+    }
 }
 
 /**
@@ -190,18 +227,27 @@ fun BangumiWebView(
                 cm.setAcceptThirdPartyCookies(this, true)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                addJavascriptInterface(PostBridge(onPostResult), "AndroidPost")
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                settings.allowFileAccessFromFileURLs = false
+                settings.allowUniversalAccessFromFileURLs = false
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                addJavascriptInterface(PostBridge(this, onPostResult), "AndroidPost")
                 addJavascriptInterface(
                     AuthBridge(
+                        view = this,
                         onMessage = { raw ->
-                            onLog("rymk-auth payload: ${raw.take(120)}")
                             when (val msg = parseAuthMessage(raw)) {
-                                null -> {}
-                                else -> if (msg.ok && !msg.token.isNullOrBlank()) {
-                                    onLog("rymk-auth: JWT received")
-                                    onAuthToken(msg.token, msg.state)
-                                } else {
-                                    onLog("rymk-auth: login reported failure (ok=${msg.ok})")
+                                null -> onLog("rymk-auth: ignored unrecognized message")
+                                else -> {
+                                    val stateNote = msg.state?.take(8)?.let { ", state=$it…" }.orEmpty()
+                                    onLog("rymk-auth message: ok=${msg.ok}, token=${!msg.token.isNullOrBlank()}$stateNote")
+                                    if (msg.ok && !msg.token.isNullOrBlank()) {
+                                        onLog("rymk-auth: JWT received")
+                                        onAuthToken(msg.token, msg.state)
+                                    } else {
+                                        onLog("rymk-auth: login reported failure (ok=${msg.ok})")
+                                    }
                                 }
                             }
                         },
@@ -246,35 +292,37 @@ fun BangumiWebView(
                     }
 
                     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                        val uri = parseUrl(url)
                         // A fresh login always (re)starts at the Bangumi login page — logout
                         // navigates this persistent WebView there. Reset the one-shot session
                         // probe so a re-login is detected again; without this, `done` stays
                         // latched from the first login and onPageFinished skips the re-login
                         // (the WebView is no longer recreated between logins).
-                        if (url != null && url.startsWith("${Config.BGM_HOST}/login")) done = false
+                        if (uri != null && isBangumiOrigin(uri) && uri.path == "/login") done = false
                         // Trace the OAuth redirect chain so a stall (bgm.tv second login,
                         // Cloudflare interstitial, unexpected page) is visible in the log.
-                        if (url != null && (url.startsWith(AUTH_ORIGIN) || url.contains("/oauth/"))) {
-                            onLog("rymk-auth nav: ${url.take(100)}")
+                        if (uri != null && (isAuthOrigin(uri) || uri.path?.startsWith("/oauth/") == true)) {
+                            onLog("rymk-auth nav: ${uri.scheme}://${uri.host}${uri.path.orEmpty()}")
                         }
                         // Backstop for WebView builds without DOCUMENT_START_SCRIPT: plant
                         // the opener shim as early as we can on auth.ry.mk pages. The
                         // __rdAuthHook guard makes a double install a no-op.
-                        if (url != null && url.startsWith(AUTH_ORIGIN)) {
+                        if (uri != null && isAuthOrigin(uri)) {
                             view.evaluateJavascript(OPENER_SHIM_JS, null)
                         }
                     }
 
                     override fun onPageFinished(view: WebView, url: String?) {
+                        val uri = parseUrl(url)
                         // Last-chance shim install for auth.ry.mk pages that postMessage
                         // late (on load rather than during parse). Runs before the done
                         // gate so it isn't skipped once the session is already captured.
-                        if (url != null && url.startsWith(AUTH_ORIGIN)) {
+                        if (uri != null && isAuthOrigin(uri)) {
                             view.evaluateJavascript(OPENER_SHIM_JS, null)
                         }
                         // Harvest the site ignore list from any logged-in Bangumi page
                         // (also after `done`: the post-auth reload to /dollars lands here).
-                        if (url != null && url.startsWith(Config.BGM_HOST) && !url.contains("/oauth/")) {
+                        if (uri != null && isBangumiOrigin(uri) && uri.path?.startsWith("/oauth/") != true) {
                             view.evaluateJavascript(IGNORE_JS) { raw ->
                                 parseIgnoreList(raw)?.let(onIgnoreList)
                             }
@@ -285,7 +333,7 @@ fun BangumiWebView(
                         // probing them here would mis-fire onLoggedIn and restart the
                         // token exchange. The JWT arrives via the opener shim, not this
                         // probe, so nothing is lost by ignoring these pages.
-                        if (url != null && (url.startsWith(AUTH_ORIGIN) || url.contains("/oauth/"))) return
+                        if (uri != null && (isAuthOrigin(uri) || uri.path?.startsWith("/oauth/") == true)) return
                         view.evaluateJavascript(EXTRACT_JS) { raw ->
                             val parsed = parseSession(raw) ?: return@evaluateJavascript
                             // uid present => logged in. formhash is optional (posting

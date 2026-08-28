@@ -22,15 +22,30 @@ data class UploadResult(val url: String? = null, val error: String? = null)
 class UploadApi(base: OkHttpClient) {
 
     // Uploads can be slow; the shared client's 30s read timeout is too tight.
+    // callTimeout is deliberately NOT set: it caps the whole call, which on a
+    // typical mobile upstream kills uploads far below the 200MB the UI promises.
+    // writeTimeout/readTimeout are per-op idle timeouts and already catch stalls.
     private val client = base.newBuilder()
-        .callTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    /** [filePart] carries its own content type; it is streamed, never buffered whole. */
-    suspend fun uploadImage(filePart: RequestBody, fileName: String, token: String?): UploadResult =
-        upload(Config.UPLOAD_API_URL, "image", filePart, fileName, token)
+    /** [filePart] carries its own content type; it is streamed, never buffered whole.
+     *  Image uploads self-heal when the bearer token is stale/expired: the upload
+     *  server accepts anonymous (no-header) image uploads, so a 401/timeout with the
+     *  header falls back to one retry without it. */
+    suspend fun uploadImage(filePart: RequestBody, fileName: String, token: String?): UploadResult {
+        if (token != null) {
+            val first = upload(Config.UPLOAD_API_URL, "image", filePart, fileName, token)
+            if (first.url != null) return first
+            // Only retry anonymously on auth failures, not on network/timeout where first may have succeeded
+            val msg = first.error.orEmpty().lowercase()
+            val isAuthError = "401" in msg || "403" in msg || "unauthorized" in msg || "forbidden" in msg || "auth" in msg
+            if (!isAuthError) return first
+            return upload(Config.UPLOAD_API_URL, "image", filePart, fileName, null)
+        }
+        return upload(Config.UPLOAD_API_URL, "image", filePart, fileName, null)
+    }
 
     suspend fun uploadFile(filePart: RequestBody, fileName: String): UploadResult =
         upload(Config.FILE_UPLOAD_API_URL, "file", filePart, fileName, null)
@@ -46,9 +61,11 @@ class UploadApi(base: OkHttpClient) {
             .setType(MultipartBody.FORM)
             .addFormDataPart(field, fileName, filePart)
             .build()
+        val idempotencyKey = java.util.UUID.randomUUID().toString()
         val req = Request.Builder()
             .url(endpoint)
             .header("User-Agent", Config.USER_AGENT)
+            .header("X-Idempotency-Key", idempotencyKey)
             .apply { if (token != null) header("Authorization", "Bearer $token") }
             .post(body)
             .build()

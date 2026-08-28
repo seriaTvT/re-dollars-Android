@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -13,6 +14,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -35,6 +37,8 @@ import kotlinx.coroutines.launch
 import mk.ry.redollars.net.GalleryItemDto
 import mk.ry.redollars.net.GalleryResponse
 import mk.ry.redollars.ui.render.LocalImageViewer
+import mk.ry.redollars.ui.render.VideoThumbnail
+import mk.ry.redollars.ui.render.VideoViewerDialog
 
 /** Media wall over the backend /gallery endpoint (GalleryPanel.tsx): thumbnail grid,
  *  tap opens the full image in the lightbox, paging via the trailing tile. */
@@ -46,7 +50,9 @@ fun GallerySheet(
 ) {
     var items by remember { mutableStateOf<List<GalleryItemDto>>(emptyList()) }
     var hasMore by remember { mutableStateOf(true) }
+    var failed by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
+    var previewVideo by remember { mutableStateOf<String?>(null) }
     val openViewer = LocalImageViewer.current
     val scope = rememberCoroutineScope()
 
@@ -57,10 +63,13 @@ fun GallerySheet(
             try {
                 val page = fetch(items.size)
                 if (page != null) {
+                    failed = false
                     items = items + page.items
                     hasMore = page.hasMore
                 } else {
-                    hasMore = false
+                    // Transient failure: keep hasMore so the button stays retryable
+                    // instead of permanently ending pagination.
+                    failed = true
                 }
             } finally {
                 loading = false
@@ -80,16 +89,20 @@ fun GallerySheet(
         ) {
             // No keys: the same url/message can legitimately appear twice.
             items(items) { item ->
-                AsyncImage(
-                    model = item.thumbnailUrl ?: item.url,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .padding(3.dp)
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable { openViewer(item.url) },
-                )
+                if (item.type == "video") {
+                    GalleryVideoTile(item) { previewVideo = item.url }
+                } else {
+                    AsyncImage(
+                        model = item.thumbnailUrl ?: item.url,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .padding(3.dp)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { openViewer(item.url) },
+                    )
+                }
             }
             if (hasMore) {
                 item(span = { GridItemSpan(maxLineSpan) }) {
@@ -100,11 +113,33 @@ fun GallerySheet(
                         if (loading) {
                             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                         } else {
-                            TextButton(onClick = { loadMore() }) { Text("加载更多") }
+                            TextButton(onClick = { loadMore() }) {
+                                Text(if (failed) "加载失败，点击重试" else "加载更多")
+                            }
                         }
                     }
                 }
             }
         }
     }
+
+    previewVideo?.let { url ->
+        VideoViewerDialog(url = url) { previewVideo = null }
+    }
+}
+
+/** Media-wall video tile: poster thumbnail (when the backend provides one) overlaid
+ *  with a play badge; tapping opens the fullscreen player. */
+@Composable
+private fun GalleryVideoTile(item: GalleryItemDto, onClick: () -> Unit) {
+    VideoThumbnail(
+        url = item.url,
+        fallbackUrl = item.thumbnailUrl,
+        contentDescription = "播放视频",
+        modifier = Modifier
+            .padding(3.dp)
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick),
+    )
 }

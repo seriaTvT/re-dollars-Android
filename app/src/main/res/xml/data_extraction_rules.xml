@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="redollars_enc.xml"/>
+        <exclude domain="sharedpref" path="redollars.xml"/>
+        <exclude domain="sharedpref" path="session_hint.xml"/>
+        <exclude domain="database" path="redollars.db"/>
+        <exclude domain="database" path="redollars.db-journal"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="redollars_enc.xml"/>
+        <exclude domain="sharedpref" path="redollars.xml"/>
+        <exclude domain="sharedpref" path="session_hint.xml"/>
+        <exclude domain="database" path="redollars.db"/>
+        <exclude domain="database" path="redollars.db-journal"/>
+    </device-transfer>
+</data-extraction-rules>

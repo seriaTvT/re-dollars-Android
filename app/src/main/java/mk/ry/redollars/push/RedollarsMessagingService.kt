@@ -104,7 +104,10 @@ class RedollarsMessagingService : FirebaseMessagingService() {
             .build()
         http.newCall(req).execute().use { res ->
             if (!res.isSuccessful) return@runCatching null
+            val clen = res.header("Content-Length")?.toLongOrNull()
+            if (clen != null && clen > 2 * 1024 * 1024) return@runCatching null
             val bytes = res.body?.bytes() ?: return@runCatching null
+            if (bytes.size > 2 * 1024 * 1024) return@runCatching null
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let(::circleCrop)
         }
     }.getOrNull()

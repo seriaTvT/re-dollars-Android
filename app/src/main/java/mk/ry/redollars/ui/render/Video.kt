@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -58,10 +59,15 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import mk.ry.redollars.net.Config
+import androidx.compose.ui.graphics.asAndroidBitmap
 import java.io.File
+import java.util.concurrent.Callable
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /**
  * Inline `[video]url[/video]` player. The chat list shows a poster: the clip's first
@@ -82,8 +88,12 @@ fun VideoBlockView(url: String) {
         runCatching { Uri.parse(url).host }.getOrNull()?.removePrefix("www.") ?: "视频"
     }
 
-    val meta by produceState(metaCache.get(url), url) {
-        if (value == null) {
+    var retryKey by androidx.compose.runtime.remember(url) { androidx.compose.runtime.mutableStateOf(0) }
+    // Poster frames count as media previews: with auto-load off we stop fetching new
+    // ones (the host-label card shows instead), though already-cached frames still draw.
+    val autoLoad = LocalAutoLoadMedia.current
+    val meta by produceState(metaCache.get(url), url, retryKey, autoLoad) {
+        if ((value == null || retryKey > 0) && autoLoad) {
             val dir = File(ctx.cacheDir, "vthumb").apply { mkdirs() }
             value = withContext(Dispatchers.IO) { loadVideoMeta(dir, url) }
                 ?.also { metaCache.put(url, it) }
@@ -157,17 +167,105 @@ fun VideoBlockView(url: String) {
                 color = cs.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 12.dp),
+                modifier = Modifier.padding(start = 12.dp).weight(1f),
             )
+            androidx.compose.material3.TextButton(onClick = { retryKey++ }) {
+                androidx.compose.material3.Text("重试")
+            }
         }
     }
 
-    if (open) VideoDialog(url) { open = false }
+    if (open) VideoViewerDialog(url) { open = false }
+}
+
+/** Shared first-frame thumbnail for a video clip: shows the extracted first frame
+ *  (disk/memory cached via [loadVideoMeta]), falling back to [fallbackUrl] (e.g. the
+ *  backend poster) while loading, then a neutral placeholder with a play badge. Used
+ *  by the media wall and composer preview bubbles. */
+@Composable
+fun VideoThumbnail(
+    url: String,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+    playBadge: Boolean = true,
+    fallbackUrl: String? = null,
+) {
+    val cs = MaterialTheme.colorScheme
+    val ctx = LocalContext.current
+    var loading by remember(url) { mutableStateOf(metaCache.get(url) == null) }
+    val meta by produceState(metaCache.get(url), url) {
+        if (value == null) {
+            val dir = File(ctx.cacheDir, "vthumb").apply { mkdirs() }
+            value = withContext(Dispatchers.IO) { loadVideoMeta(dir, url) }
+                ?.also { metaCache.put(url, it) }
+        }
+        loading = false
+    }
+    val frame = meta?.frame
+    // Only show the progress state when there is nothing better to display yet.
+    val showLoading = loading && (frame == null || frame.width <= 0) && fallbackUrl.isNullOrBlank()
+
+    Box(modifier, contentAlignment = Alignment.Center) {
+        when {
+            frame != null && frame.width > 0 -> Image(
+                bitmap = frame,
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            fallbackUrl != null -> AsyncImage(
+                model = fallbackUrl,
+                contentDescription = contentDescription,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+            else -> Box(
+                Modifier.fillMaxSize().background(cs.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (showLoading) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                }
+            }
+        }
+        if (playBadge && !showLoading) {
+            Box(
+                Modifier.size(28.dp).background(Color.Black.copy(alpha = 0.55f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Default.PlayArrow,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
 }
 
 private class VideoMeta(val frame: ImageBitmap, val durationMs: Long)
 
-private val metaCache = LruCache<String, VideoMeta>(48)
+// Byte-budgeted (~24MB): first frames decode at source resolution, so one 1080p
+// frame is ~8MB — an entry-counted cache could pin hundreds of MB on the media wall.
+private val metaCache = object : LruCache<String, VideoMeta>(24 * 1024 * 1024) {
+    override fun sizeOf(key: String, value: VideoMeta): Int =
+        value.frame.asAndroidBitmap().allocationByteCount.coerceAtLeast(1)
+}
+
+private val retrieverPool = Executors.newFixedThreadPool(3) { r ->
+    Thread(r, "video-meta").apply { isDaemon = true }
+}
+
+/** Bounded wait for [block] on the retriever pool. The retriever's network path
+ *  stalls indefinitely on some hosts and cannot be interrupted (withTimeoutOrNull
+ *  cannot cancel a blocked native call); on timeout we stop waiting and the daemon
+ *  thread releases the retriever whenever the call eventually returns. */
+private fun <T> withRetrieverTimeout(timeoutMs: Long, block: () -> T): T? = try {
+    retrieverPool.submit(Callable(block)).get(timeoutMs, TimeUnit.MILLISECONDS)
+} catch (_: Exception) {
+    null // timeout / rejection / interruption — treat as "no metadata available"
+}
 
 private fun formatDuration(ms: Long): String {
     val totalSec = (ms / 1000).coerceAtLeast(0)
@@ -178,6 +276,7 @@ private fun formatDuration(ms: Long): String {
  *  so app restarts don't refetch. Null when the host/container defeats the retriever —
  *  the caller keeps the plain card. */
 private fun loadVideoMeta(dir: File, url: String): VideoMeta? = runCatching {
+    if (!url.startsWith("http://") && !url.startsWith("https://")) return@runCatching null
     val key = Integer.toHexString(url.hashCode())
     val jpg = File(dir, "$key.jpg")
     val dur = File(dir, "$key.dur")
@@ -187,26 +286,30 @@ private fun loadVideoMeta(dir: File, url: String): VideoMeta? = runCatching {
             return@runCatching VideoMeta(cached.asImageBitmap(), durationMs)
         }
     }
-    val retriever = MediaMetadataRetriever()
-    try {
-        retriever.setDataSource(url, mapOf("User-Agent" to Config.BROWSER_UA))
-        val durationMs = retriever
-            .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-            ?.toLongOrNull() ?: 0L
-        val frame = retriever.frameAtTime ?: return@runCatching null
-        runCatching {
-            jpg.outputStream().use { frame.compress(Bitmap.CompressFormat.JPEG, 82, it) }
-            dur.writeText(durationMs.toString())
+    withRetrieverTimeout(12_000) {
+        val retriever = MediaMetadataRetriever()
+        try {
+            retriever.setDataSource(url, mapOf("User-Agent" to Config.BROWSER_UA))
+            val durationMs = retriever
+                .extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                ?.toLongOrNull() ?: 0L
+            val frame = retriever.frameAtTime ?: return@withRetrieverTimeout null
+            runCatching {
+                jpg.outputStream().use { frame.compress(Bitmap.CompressFormat.JPEG, 82, it) }
+                dur.writeText(durationMs.toString())
+            }
+            VideoMeta(frame.asImageBitmap(), durationMs)
+        } finally {
+            runCatching { retriever.release() }
         }
-        VideoMeta(frame.asImageBitmap(), durationMs)
-    } finally {
-        runCatching { retriever.release() }
     }
 }.getOrNull()
 
+/** Fullscreen ExoPlayer dialog for a remote video clip; shared by inline messages,
+ *  the media wall, and composer previews. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
-private fun VideoDialog(url: String, onClose: () -> Unit) {
+fun VideoViewerDialog(url: String, onClose: () -> Unit) {
     val ctx = LocalContext.current
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -270,6 +373,7 @@ private fun VideoDialog(url: String, onClose: () -> Unit) {
                     Text(msg, color = Color.White, textAlign = TextAlign.Center)
                     TextButton(onClick = {
                         runCatching {
+                            if (!url.startsWith("http://") && !url.startsWith("https://")) return@runCatching
                             ctx.startActivity(
                                 Intent(Intent.ACTION_VIEW, Uri.parse(url))
                                     .setDataAndType(Uri.parse(url), "video/*")

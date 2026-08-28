@@ -51,8 +51,10 @@ import mk.ry.redollars.di.ApplicationScope
 import mk.ry.redollars.net.Config
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.security.MessageDigest
 import java.io.File
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -80,7 +82,8 @@ class AudioPlayer @Inject constructor(
 
     /** Probed fallback durations (ms) by source, for containers MediaPlayer can't
      *  measure — Chrome's MediaRecorder emits WebM with no duration header. */
-    private val probedDurations = HashMap<String, Int>()
+    // Written on Main, read from load-job coroutines on Default.
+    private val probedDurations = ConcurrentHashMap<String, Int>()
 
     private val _nowPlaying = MutableStateFlow<String?>(null)
     val nowPlaying: StateFlow<String?> = _nowPlaying.asStateFlow()
@@ -125,16 +128,15 @@ class AudioPlayer @Inject constructor(
                         .header("User-Agent", Config.USER_AGENT)
                         .build()
                     http.newCall(req).execute().use { res ->
+                        val clen = res.header("Content-Length")?.toLongOrNull()
+                        if (clen != null && clen > 20 * 1024 * 1024) return@runCatching null
                         if (!res.isSuccessful) return@runCatching null
-                        // Download to a private temp file and rename into place once
-                        // complete: a cancelled/failed attempt must never leave a
-                        // half-written cache entry for the next click to choke on.
                         val tmp = File.createTempFile("dl-", ".part", cacheDir)
                         try {
                             res.body?.byteStream()?.use { input ->
                                 tmp.outputStream().use { input.copyTo(it) }
                             }
-                            if (tmp.length() == 0L || !tmp.renameTo(file)) return@runCatching null
+                            if (tmp.length() == 0L || tmp.length() > 20 * 1024 * 1024 || !tmp.renameTo(file)) return@runCatching null
                         } finally {
                             tmp.delete()
                         }
@@ -150,8 +152,9 @@ class AudioPlayer @Inject constructor(
         }
     }
 
+    private fun sha256Hex(s: String) = MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }.take(16)
     private fun cacheFile(source: String) =
-        File(cacheDir, Integer.toHexString(source.hashCode()) + ".m4a")
+        File(cacheDir, sha256Hex(source) + ".m4a")
 
     /** Container-reported duration in ms; 0 when the header carries none. */
     private fun containerDurationMs(path: String): Long {

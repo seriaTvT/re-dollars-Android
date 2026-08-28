@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">rd.ry.mk</domain>
+        <domain includeSubdomains="true">up.ry.mk</domain>
+        <domain includeSubdomains="true">bgm.tv</domain>
+        <domain includeSubdomains="true">bangumi.tv</domain>
+        <domain includeSubdomains="true">chii.in</domain>
+        <domain includeSubdomains="true">auth.ry.mk</domain>
+        <domain includeSubdomains="true">lain.bgm.tv</domain>
+        <pin-set>
+            <pin digest="SHA-256">Nna/qm7tawbg1k2+WPynsaxzTVl+fpU2LLouasFdqP8=</pin>
+            <pin digest="SHA-256">nWN7PSep5XDQdge5zK24CnCRXHr3KvzhKEGxsdqCX9E=</pin>
+            <pin digest="SHA-256">eTHuRU78dJxZftsRBfCUU0cRPMW/iJKDCgMLoZkQerE=</pin>
+            <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
+            <pin digest="SHA-256">lOsdd9qcRNoS+JkYZYpo5QwEoW4smzwhvpAPYORVkDk=</pin>
+            <pin digest="SHA-256">kIdp6NNEd8wsugYyyIYFsi1ylMCED3hZbSR8ZFsa/A4=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

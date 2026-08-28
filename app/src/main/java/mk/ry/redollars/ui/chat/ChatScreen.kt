@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 import mk.ry.redollars.ChatViewModel
+import mk.ry.redollars.data.DisplayPrefs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.WsUser
 import java.time.Instant
@@ -89,6 +90,8 @@ fun ChatScreen(
     var showSearch by rememberSaveable { mutableStateOf(false) }
     var showGallery by rememberSaveable { mutableStateOf(false) }
     var showBlockManager by rememberSaveable { mutableStateOf(false) }
+    var showDisplaySettings by rememberSaveable { mutableStateOf(false) }
+    val displayPrefs by vm.displayPrefs.collectAsState()
 
     Scaffold(
         topBar = {
@@ -101,7 +104,10 @@ fun ChatScreen(
                 onSearch = { showSearch = true },
                 onGallery = { showGallery = true },
                 onBlockManager = { showBlockManager = true },
+                onDisplaySettings = { showDisplaySettings = true },
                 onNotifications = { showNotifications = true },
+                backendAuthExpired = vm.backendAuthExpired,
+                onReconnect = vm::reconnect,
                 // Logged in: open the account sheet (status + logout). Logged out: the
                 // login WebView, as before.
                 onAccount = { if (vm.session != null) vm.showAccount = true else onOpenLogin() },
@@ -148,10 +154,13 @@ fun ChatScreen(
                 ownUid = vm.session?.uid,
                 canModify = vm.authReady,
                 onlineUsers = onlineUsers,
+                displayPrefs = displayPrefs,
                 onShowProfile = { vm.profileUid = it },
                 onMention = { vm.mentionUser(it.uid, it.nickname) },
                 loadingOlder = vm.loadingOlder,
                 onLoadOlder = vm::loadOlder,
+                onSyncNewer = vm::syncNewer,
+                onJumpToMessage = vm::jumpToMessage,
                 onReact = vm::toggleReaction,
                 onReply = vm::startReply,
                 onEdit = vm::startEdit,
@@ -166,7 +175,14 @@ fun ChatScreen(
     }
 
     if (showSearch) {
-        SearchSheet(search = vm::searchMessages, onDismiss = { showSearch = false })
+        SearchSheet(
+            search = vm::searchMessages,
+            onDismiss = { showSearch = false },
+            onOpen = { msg ->
+                showSearch = false
+                vm.pendingJumpId = msg.id
+            },
+        )
     }
     if (showGallery) {
         GallerySheet(fetch = vm::fetchGallery, onDismiss = { showGallery = false })
@@ -183,6 +199,14 @@ fun ChatScreen(
             onSetSiteUnblocked = vm::setSiteUnblocked,
             loadProfile = vm::loadProfile,
             onDismiss = { showBlockManager = false },
+        )
+    }
+
+    if (showDisplaySettings) {
+        DisplaySettingsSheet(
+            prefs = displayPrefs,
+            onChange = vm::updateDisplayPrefs,
+            onDismiss = { showDisplaySettings = false },
         )
     }
 
@@ -237,7 +261,10 @@ private fun ChatTopBar(
     onSearch: () -> Unit,
     onGallery: () -> Unit,
     onBlockManager: () -> Unit,
+    onDisplaySettings: () -> Unit,
     onNotifications: () -> Unit,
+    backendAuthExpired: Boolean,
+    onReconnect: () -> Unit,
     onAccount: () -> Unit,
 ) {
     TopAppBar(
@@ -248,7 +275,14 @@ private fun ChatTopBar(
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                StatusLine(connected, onlineCount)
+                StatusLine(connected, onlineCount, onReconnect)
+                if (backendAuthExpired) {
+                    Text(
+                        text = "后端授权未验证",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
             }
         },
         actions = {
@@ -290,6 +324,13 @@ private fun ChatTopBar(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("界面设置") },
+                        onClick = {
+                            showMenu = false
+                            onDisplaySettings()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text(if (debugOn) "隐藏调试信息" else "调试信息") },
                         onClick = {
                             showMenu = false
@@ -303,8 +344,11 @@ private fun ChatTopBar(
 }
 
 @Composable
-private fun StatusLine(connected: Boolean, onlineCount: Int) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
+private fun StatusLine(connected: Boolean, onlineCount: Int, onReconnect: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.clickable(onClick = onReconnect),
+    ) {
         Box(
             Modifier
                 .size(8.dp)
@@ -313,7 +357,7 @@ private fun StatusLine(connected: Boolean, onlineCount: Int) {
         )
         Spacer(Modifier.width(6.dp))
         Text(
-            text = if (connected) "$onlineCount online" else "reconnecting…",
+            text = if (connected) "$onlineCount online" else "点击重连",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -326,10 +370,13 @@ private fun MessageList(
     ownUid: Long?,
     canModify: Boolean,
     onlineUsers: Set<Long>,
+    displayPrefs: DisplayPrefs,
     onShowProfile: (Long) -> Unit,
     onMention: (MessageDto) -> Unit,
     loadingOlder: Boolean,
     onLoadOlder: () -> Unit,
+    onSyncNewer: () -> Unit = {},
+    onJumpToMessage: (Long) -> Unit = {},
     onReact: (Long, String) -> Unit,
     onReply: (MessageDto) -> Unit,
     onEdit: (MessageDto) -> Unit,
@@ -398,15 +445,25 @@ private fun MessageList(
         val target = jumpToId ?: return@LaunchedEffect
         val index = messages.indexOfFirst { it.id == target }
         val oldestLoaded = messages.firstOrNull()?.id ?: Long.MAX_VALUE
+        val newestLoaded = messages.lastOrNull()?.id ?: Long.MIN_VALUE
         when {
             index >= 0 -> {
                 listState.animateScrollToItem(index + if (loadingOlder) 1 else 0)
                 onJumpHandled()
             }
             // Older than the loaded window: page back and re-run when messages change.
-            messages.isNotEmpty() && target < oldestLoaded -> onLoadOlder()
+            messages.isNotEmpty() && target < oldestLoaded -> {
+                val gap = oldestLoaded - target
+                if (gap > 1000) onJumpToMessage(target) else onLoadOlder()
+            }
+            // Newer than the loaded window: catch up then retry (cold-start push)
+            messages.isNotEmpty() && target > newestLoaded -> {
+                onSyncNewer()
+            }
             // Should be in range but missing (e.g. deleted): give up quietly.
             messages.isNotEmpty() -> onJumpHandled()
+            // Empty list: keep pending, sync will fill
+            else -> {}
         }
     }
 
@@ -460,6 +517,7 @@ private fun MessageList(
                     ownUid = ownUid,
                     canModify = canModify,
                     online = m.uid in onlineUsers,
+                    prefs = displayPrefs,
                     onShowProfile = onShowProfile,
                     onMention = { onMention(m) },
                     onReact = { emoji -> onReact(m.id, emoji) },

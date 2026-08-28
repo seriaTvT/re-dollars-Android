@@ -2,14 +2,72 @@ package mk.ry.redollars.net
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 import okhttp3.MediaType.Companion.toMediaType
+
+/** Outcome of GET /auth/me: distinguish a definitively-invalid token from a
+ *  transient network failure so we never drop a good token on a flaky connection. */
+sealed interface AuthMeResult {
+    data class Valid(val user: AuthUserDto) : AuthMeResult
+    data object Invalid : AuthMeResult
+    data object Error : AuthMeResult
+}
+
+/** Outcome of POST /auth/token-login, which turns an rymk-auth JWT into a
+ * long-lived Re:Dollars token. */
+sealed interface TokenLoginResult {
+    data class Valid(val token: String, val user: AuthUserDto?) : TokenLoginResult
+    data object Invalid : TokenLoginResult
+    data object Error : TokenLoginResult
+}
+
+private fun parseAuthUser(element: JsonElement): AuthUserDto? {
+    val obj = element as? JsonObject ?: return null
+    val id = obj["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+        ?: obj["uid"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+        ?: return null
+    if (id <= 0L) return null
+    return AuthUserDto(
+        id = id,
+        nickname = obj["nickname"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+        avatar = obj["avatar"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+    )
+}
+
+private data class ParsedAuthResponse(val status: Boolean?, val user: AuthUserDto?)
+
+private fun parseAuthResponse(body: String): ParsedAuthResponse? {
+    val root = runCatching { AppJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+    val status = root["status"]?.jsonPrimitive?.booleanOrNull
+    val user = root["user"]?.let(::parseAuthUser)
+        ?: parseAuthUser(root)
+    return ParsedAuthResponse(status, user)
+}
+
+private data class ParsedTokenLoginResponse(
+    val status: Boolean?,
+    val token: String?,
+    val user: AuthUserDto?,
+)
+
+private fun parseTokenLoginResponse(body: String): ParsedTokenLoginResponse? {
+    val root = runCatching { AppJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+    return ParsedTokenLoginResponse(
+        status = root["status"]?.jsonPrimitive?.booleanOrNull,
+        token = root["token"]?.jsonPrimitive?.contentOrNull,
+        user = root["user"]?.let(::parseAuthUser),
+    )
+}
 
 /** Read-only backend REST calls (no auth needed). */
 class RestApi(private val client: OkHttpClient) {
@@ -30,17 +88,25 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
-    /** GET /api/v1/messages?before_id=&limit= — messages older than a db id (history paging). */
-    suspend fun fetchHistory(beforeId: Long, limit: Int = 50): List<MessageDto> = withContext(Dispatchers.IO) {
+    /**
+     * GET /api/v1/messages?before_id=&limit= — messages older than a db id (history paging).
+     * Null on network/HTTP/parse failure so callers can retry; an empty list means the
+     * fetch succeeded and history is genuinely exhausted.
+     */
+    suspend fun fetchHistory(beforeId: Long, limit: Int = 50): List<MessageDto>? = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("${Config.BACKEND_API_URL}/messages?before_id=$beforeId&limit=$limit")
             .header("User-Agent", Config.USER_AGENT)
             .get()
             .build()
-        client.newCall(req).execute().use { res ->
-            val body = res.body?.string().orEmpty()
-            if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
-            runCatching { AppJson.decodeFromString<List<MessageDto>>(body) }.getOrDefault(emptyList())
+        try {
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                if (!res.isSuccessful || body.isBlank()) return@withContext null
+                runCatching { AppJson.decodeFromString<List<MessageDto>>(body) }.getOrNull()
+            }
+        } catch (_: IOException) {
+            null
         }
     }
 
@@ -62,19 +128,72 @@ class RestApi(private val client: OkHttpClient) {
         }
     }
 
-    /** GET /api/v1/auth/me — validate a backend Bearer token, returning its user. */
-    suspend fun authMe(token: String): AuthUserDto? = withContext(Dispatchers.IO) {
+    /** GET /api/v1/auth/me — validate a backend Bearer token, returning its user.
+     *  Tri-state so callers can tell an expired token (401/403) from a network error. */
+    suspend fun authMe(token: String): AuthMeResult = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("${Config.BACKEND_API_URL}/auth/me")
             .header("User-Agent", Config.USER_AGENT)
             .header("Authorization", "Bearer $token")
             .get()
             .build()
-        client.newCall(req).execute().use { res ->
-            val body = res.body?.string().orEmpty()
-            if (!res.isSuccessful || body.isBlank()) return@withContext null
-            runCatching { AppJson.decodeFromString<AuthMeResponse>(body) }.getOrNull()
-                ?.takeIf { it.status }?.user
+        try {
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                when {
+                    res.code == 401 || res.code == 403 -> AuthMeResult.Invalid
+                    !res.isSuccessful || body.isBlank() -> AuthMeResult.Error
+                    else -> {
+                        val parsed = parseAuthResponse(body)
+                        when {
+                            parsed == null -> AuthMeResult.Error
+                            parsed.status == false -> AuthMeResult.Invalid
+                            parsed.user != null -> AuthMeResult.Valid(parsed.user)
+                            else -> AuthMeResult.Invalid
+                        }
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            AuthMeResult.Error
+        } catch (e: Exception) {
+            AuthMeResult.Error
+        }
+    }
+
+    /** POST /api/v1/auth/token-login — exchange an rymk-auth JWT for the
+     * backend's long-lived local token. */
+    suspend fun tokenLogin(token: String): TokenLoginResult = withContext(Dispatchers.IO) {
+        if (token.isBlank()) return@withContext TokenLoginResult.Invalid
+        val payload = AppJson.encodeToString(TokenLoginRequest.serializer(), TokenLoginRequest(token))
+        val req = Request.Builder()
+            .url("${Config.BACKEND_API_URL}/auth/token-login")
+            .header("User-Agent", Config.USER_AGENT)
+            .header("Content-Type", "application/json")
+            .post(payload.toRequestBody(jsonMedia))
+            .build()
+        try {
+            client.newCall(req).execute().use { res ->
+                val body = res.body?.string().orEmpty()
+                when {
+                    res.code == 400 || res.code == 401 || res.code == 403 -> TokenLoginResult.Invalid
+                    !res.isSuccessful || body.isBlank() -> TokenLoginResult.Error
+                    else -> {
+                        val parsed = parseTokenLoginResponse(body)
+                        when {
+                            parsed == null -> TokenLoginResult.Error
+                            parsed.status == false -> TokenLoginResult.Invalid
+                            parsed.status == true && !parsed.token.isNullOrBlank() ->
+                                TokenLoginResult.Valid(parsed.token, parsed.user)
+                            else -> TokenLoginResult.Error
+                        }
+                    }
+                }
+            }
+        } catch (e: IOException) {
+            TokenLoginResult.Error
+        } catch (e: Exception) {
+            TokenLoginResult.Error
         }
     }
 
@@ -136,8 +255,9 @@ class RestApi(private val client: OkHttpClient) {
         client.newCall(req).execute().use { it.isSuccessful }
     }
 
-    /** GET /api/v1/search?q=&offset=&limit= — full-text search, newest first. */
-    suspend fun searchMessages(query: String, offset: Int, limit: Int = 20): List<MessageDto> =
+    /** GET /api/v1/search?q=&offset=&limit= — full-text search, newest first.
+     *  Null on failure so callers keep their results and can retry the same offset. */
+    suspend fun searchMessages(query: String, offset: Int, limit: Int = 20): List<MessageDto>? =
         withContext(Dispatchers.IO) {
             val q = java.net.URLEncoder.encode(query, "UTF-8")
             val req = Request.Builder()
@@ -145,11 +265,15 @@ class RestApi(private val client: OkHttpClient) {
                 .header("User-Agent", Config.USER_AGENT)
                 .get()
                 .build()
-            client.newCall(req).execute().use { res ->
-                val body = res.body?.string().orEmpty()
-                if (!res.isSuccessful || body.isBlank()) return@withContext emptyList()
-                runCatching { AppJson.decodeFromString<SearchResponse>(body) }.getOrNull()
-                    ?.takeIf { it.status }?.results ?: emptyList()
+            try {
+                client.newCall(req).execute().use { res ->
+                    val body = res.body?.string().orEmpty()
+                    if (!res.isSuccessful || body.isBlank()) return@withContext null
+                    runCatching { AppJson.decodeFromString<SearchResponse>(body) }.getOrNull()
+                        ?.takeIf { it.status }?.results
+                }
+            } catch (_: IOException) {
+                null
             }
         }
 

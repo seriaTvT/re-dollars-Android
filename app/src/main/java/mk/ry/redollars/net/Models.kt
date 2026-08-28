@@ -200,6 +200,20 @@ data class AuthMeResponse(
     val user: AuthUserDto? = null,
 )
 
+/** POST /auth/token-login: exchange an rymk-auth JWT for a long-lived RD token. */
+@Serializable
+data class TokenLoginRequest(
+    val token: String,
+)
+
+@Serializable
+data class TokenLoginResponse(
+    val status: Boolean = false,
+    val token: String? = null,
+    val user: AuthUserDto? = null,
+    val message: String? = null,
+)
+
 @Serializable
 data class AuthUserDto(
     val id: Long = 0,

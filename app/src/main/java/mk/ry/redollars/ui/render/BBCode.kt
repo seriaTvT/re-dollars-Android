@@ -1,8 +1,11 @@
 package mk.ry.redollars.ui.render
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -10,10 +13,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -22,6 +27,7 @@ import androidx.compose.foundation.text.InlineTextContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -48,7 +54,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import coil3.compose.AsyncImage
 import mk.ry.redollars.bmo.BmoImage
+import mk.ry.redollars.data.BubuScale
 import mk.ry.redollars.net.ReplyDetails
+
+/** Long-press on media embedded in a message (inline images, stickers): the chat bubble
+ *  provides this so pressing media pops the same context menu as pressing the bubble. */
+val LocalBubbleLongPress = compositionLocalOf<(() -> Unit)?> { null }
+
+/** Auto-load media previews (界面设置): off turns `[img]` blocks into tap-to-load
+ *  placeholders and stops video poster fetching (already-cached frames still render).
+ *  Stickers/smilies stay inline text-sized media and keep loading. */
+val LocalAutoLoadMedia = compositionLocalOf { true }
+
+/** Side-length multiplier for the musume/blake ("布布") dynamic emojis (界面设置). */
+val LocalBubuScale = compositionLocalOf { BubuScale.SMALL }
 
 // ---------------------------------------------------------------------------
 // Block-level parsing
@@ -161,8 +180,8 @@ private fun spanFor(styles: Set<St>, linkColor: Color, maskBg: Color): SpanStyle
     )
 }
 
-private fun smileyInline(src: String, large: Boolean): InlineTextContent {
-    val size = if (large) 2.6.em else 1.5.em
+private fun smileyInline(src: String, large: Boolean, bubuScale: BubuScale): InlineTextContent {
+    val size = if (large) (2.6f * bubuScale.factor).em else 1.5.em
     return InlineTextContent(Placeholder(size, size, PlaceholderVerticalAlign.TextCenter)) {
         AsyncImage(model = src, contentDescription = null, modifier = Modifier.fillMaxWidth())
     }
@@ -173,14 +192,19 @@ private fun smileyInline(src: String, large: Boolean): InlineTextContent {
 private val STICKER_TAG =
     Regex("""\[(?:emoji|sticker)\](.+?)\[/(?:emoji|sticker)\]""", RegexOption.IGNORE_CASE)
 
+@OptIn(ExperimentalFoundationApi::class)
 private fun stickerInline(src: String): InlineTextContent =
     InlineTextContent(Placeholder(6.em, 6.em, PlaceholderVerticalAlign.TextCenter)) {
         val openViewer = LocalImageViewer.current
+        val onLongPress = LocalBubbleLongPress.current
         AsyncImage(
             model = src,
             contentDescription = null,
             contentScale = ContentScale.Fit,
-            modifier = Modifier.fillMaxSize().clickable { openViewer(src) },
+            modifier = Modifier.fillMaxSize().combinedClickable(
+                onClick = { openViewer(src) },
+                onLongClick = { onLongPress?.invoke() },
+            ),
         )
     }
 
@@ -191,7 +215,12 @@ private fun bmoInline(code: String): InlineTextContent =
         BmoImage(code, Modifier.fillMaxSize())
     }
 
-private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineResult {
+private fun buildInline(
+    text: String,
+    linkColor: Color,
+    maskBg: Color,
+    bubuScale: BubuScale,
+): InlineResult {
     val inline = LinkedHashMap<String, InlineTextContent>()
     val counter = intArrayOf(0)
 
@@ -201,25 +230,31 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
         if (span == null) b.append(chunk) else b.withStyle(span) { append(chunk) }
     }
 
-    fun walk(b: AnnotatedString.Builder, src: String, styles: Set<St>) {
+    fun walk(b: AnnotatedString.Builder, src: String, styles: Set<St>, depth: Int = 0) {
+        // Pathological nesting ([b][b][b]…) recurses once per level; cap it so a
+        // crafted message can't overflow the stack — beyond the cap render flat.
+        if (depth > 32) {
+            appendStyled(b, src, styles)
+            return
+        }
         var i = 0
         for (m in INLINE_REGEX.findAll(src)) {
             if (m.range.first > i) appendStyled(b, src.substring(i, m.range.first), styles)
             val g = m.groups
             when {
-                g[1] != null -> walk(b, g[1]!!.value, styles + St.BOLD)
-                g[2] != null -> walk(b, g[2]!!.value, styles + St.ITALIC)
-                g[3] != null -> walk(b, g[3]!!.value, styles + St.UNDERLINE)
-                g[4] != null -> walk(b, g[4]!!.value, styles + St.STRIKE)
-                g[5] != null -> walk(b, g[5]!!.value, styles + St.MASK)
+                g[1] != null -> walk(b, g[1]!!.value, styles + St.BOLD, depth + 1)
+                g[2] != null -> walk(b, g[2]!!.value, styles + St.ITALIC, depth + 1)
+                g[3] != null -> walk(b, g[3]!!.value, styles + St.UNDERLINE, depth + 1)
+                g[4] != null -> walk(b, g[4]!!.value, styles + St.STRIKE, depth + 1)
+                g[5] != null -> walk(b, g[5]!!.value, styles + St.MASK, depth + 1)
                 g[7] != null -> {
                     val href = g[6]!!.value.trim()
                     if (isHttpUrl(href)) {
                         b.withLink(LinkAnnotation.Url(href)) {
-                            walk(this, g[7]!!.value, styles + St.LINK)
+                            walk(this, g[7]!!.value, styles + St.LINK, depth + 1)
                         }
                     } else {
-                        walk(b, g[7]!!.value, styles)
+                        walk(b, g[7]!!.value, styles, depth + 1)
                     }
                 }
                 g[9] != null -> b.withLink(LinkAnnotation.Url("https://bgm.tv/user/${g[8]!!.value}")) {
@@ -243,7 +278,7 @@ private fun buildInline(text: String, linkColor: Color, maskBg: Color): InlineRe
                         smileySrc != null -> {
                             val key = "sm${counter[0]++}"
                             val large = raw.startsWith("(musume_") || raw.startsWith("(blake_")
-                            inline[key] = smileyInline(smileySrc, large)
+                            inline[key] = smileyInline(smileySrc, large, bubuScale)
                             b.appendInlineContent(key, raw)
                         }
                         // Legacy (bmo_name) codes stay as text.
@@ -280,12 +315,12 @@ fun BBCodeMessage(message: String, modifier: Modifier = Modifier) {
         blocks.forEach { block ->
             when (block) {
                 is TextBlock -> InlineText(block.text)
-                is ImageBlock -> ImageStack(block.urls)
+                is ImageBlock -> ImageStack(block.urls.filter { isHttpUrl(it) })
                 is QuoteBlock -> QuoteView(block.inner)
                 is CodeBlock -> CodeView(block.content)
                 is LinkBlock -> LinkLine(block.label, block.url)
-                is AudioBlock -> AudioBlockView(block.url)
-                is VideoBlock -> VideoBlockView(block.url)
+                is AudioBlock -> if (isHttpUrl(block.url)) AudioBlockView(block.url) else InlineText("[音频: 无效链接]")
+                is VideoBlock -> if (isHttpUrl(block.url)) VideoBlockView(block.url) else InlineText("[视频: 无效链接]")
             }
         }
     }
@@ -298,8 +333,9 @@ private fun InlineText(
     onOverflow: (Boolean) -> Unit = {},
 ) {
     val cs = MaterialTheme.colorScheme
-    val result = remember(text, cs.primary, cs.surfaceVariant) {
-        buildInline(text, linkColor = cs.primary, maskBg = cs.surfaceVariant)
+    val bubuScale = LocalBubuScale.current
+    val result = remember(text, cs.primary, cs.surfaceVariant, bubuScale) {
+        buildInline(text, linkColor = cs.primary, maskBg = cs.surfaceVariant, bubuScale = bubuScale)
     }
     Text(
         text = result.annotated,
@@ -337,22 +373,66 @@ private fun CollapsibleInlineText(text: String) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ImageStack(urls: List<String>) {
     val openViewer = LocalImageViewer.current
+    val onLongPress = LocalBubbleLongPress.current
+    val autoLoad = LocalAutoLoadMedia.current
     Column(Modifier.padding(vertical = 4.dp)) {
         urls.forEach { url ->
-            AsyncImage(
-                model = url,
-                contentDescription = null,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .padding(bottom = 4.dp)
-                    .sizeIn(maxWidth = 240.dp, maxHeight = 280.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .clickable { openViewer(url) },
-            )
+            var forceShow by remember(url) { mutableStateOf(false) }
+            if (autoLoad || forceShow) {
+                AsyncImage(
+                    model = url,
+                    contentDescription = null,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .padding(bottom = 4.dp)
+                        .sizeIn(maxWidth = 240.dp, maxHeight = 280.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .combinedClickable(
+                            onClick = { openViewer(url) },
+                            onLongClick = { onLongPress?.invoke() },
+                        ),
+                )
+            } else {
+                UnloadedMediaPlaceholder(
+                    modifier = Modifier.padding(bottom = 4.dp),
+                    onTap = { forceShow = true },
+                    onLongPress = { onLongPress?.invoke() },
+                )
+            }
         }
+    }
+}
+
+/** Tap-to-load stand-in for `[img]` blocks when auto-loading previews is off. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun UnloadedMediaPlaceholder(
+    modifier: Modifier = Modifier,
+    onTap: () -> Unit,
+    onLongPress: (() -> Unit)?,
+) {
+    val cs = MaterialTheme.colorScheme
+    Box(
+        modifier
+            .widthIn(max = 240.dp)
+            .heightIn(min = 90.dp)
+            .background(cs.surfaceVariant, RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = onTap,
+                onLongClick = { onLongPress?.invoke() },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = "图片未加载 · 点击查看",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.Medium,
+            color = cs.onSurfaceVariant,
+        )
     }
 }
 

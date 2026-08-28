@@ -80,8 +80,8 @@ fun AccountSheet(
                 )
             }
 
-            // Backend session status: green once the rymk-auth JWT is validated for this
-            // uid (edit/delete/upload unlocked), amber while it isn't.
+            // Backend session status: green once the persisted RD token (or its
+            // temporary rymk-auth fallback) is validated for this uid.
             Row(
                 Modifier.padding(top = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -94,7 +94,7 @@ fun AccountSheet(
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    text = if (authReady) "后端已验证 (rymk-auth)" else "后端未验证",
+                    text = if (authReady) "后端已验证" else "后端未验证",
                     style = MaterialTheme.typography.bodyMedium,
                     color = cs.onSurfaceVariant,
                 )

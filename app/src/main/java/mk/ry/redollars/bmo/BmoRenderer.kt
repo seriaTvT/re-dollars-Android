@@ -121,7 +121,8 @@ class BmoRenderer @Inject constructor(
 
     private fun loadPart(src: String): Bitmap? {
         parts[src]?.let { return it }
-        val file = File(cacheDir, src.substringAfterLast('/'))
+        val safe = java.security.MessageDigest.getInstance("SHA-256").digest(src.toByteArray()).joinToString("") { "%02x".format(it) }.take(8) + "_" + src.substringAfterLast('/')
+        val file = File(cacheDir, safe)
         val bytes = runCatching { file.takeIf { it.exists() }?.readBytes() }.getOrNull()
             ?: fetchBytes(Config.BMO_BASE_URL + src)
                 ?.also { runCatching { file.writeBytes(it) } }

@@ -24,8 +24,8 @@ android {
         applicationId = "mk.ry.redollars"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     signingConfigs {
@@ -59,6 +59,11 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -119,4 +124,7 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:34.4.0"))
     implementation("com.google.firebase:firebase-messaging")
     implementation("androidx.lifecycle:lifecycle-process:2.11.0")
+    implementation("androidx.security:security-crypto:1.0.0")
+
+    testImplementation("junit:junit:4.13.2")
 }

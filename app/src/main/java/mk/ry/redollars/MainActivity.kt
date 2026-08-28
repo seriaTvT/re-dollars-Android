@@ -5,13 +5,16 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import android.os.SystemClock
 import dagger.hilt.android.AndroidEntryPoint
 import android.webkit.WebView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
@@ -34,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
@@ -121,6 +126,19 @@ private fun RedollarsApp(
 
             var webView by remember { mutableStateOf<WebView?>(null) }
             var lightboxUrl by remember { mutableStateOf<String?>(null) }
+            var pendingDownloadUrl by remember { mutableStateOf<String?>(null) }
+            val context = LocalContext.current
+            // Android 8/9 need WRITE_EXTERNAL_STORAGE before saving to the gallery; 10+
+            // uses scoped MediaStore and never asks.
+            val downloadLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted ->
+                pendingDownloadUrl?.let { url ->
+                    if (granted) vm.downloadImage(url)
+                    else Toast.makeText(context, "需要存储权限才能保存图片", Toast.LENGTH_SHORT).show()
+                }
+                pendingDownloadUrl = null
+            }
 
             // A returning user (logged in on a previous launch) is auto-logged-in silently:
             // the login WebView is mounted hidden right away and re-derives the session in
@@ -157,14 +175,17 @@ private fun RedollarsApp(
 
             // The VM requests the rymk-auth flow after login when no valid backend token
             // is stored; drive it in the (now visible) login WebView.
-            LaunchedEffect(vm.oauthRequestUrl) {
-                vm.oauthRequestUrl?.let { webView?.loadUrl(it) }
+            // Also re-run when webView becomes available so rotation/recreation doesn't drop it.
+            LaunchedEffect(vm.oauthRequestUrl, webView) {
+                val url = vm.oauthRequestUrl ?: return@LaunchedEffect
+                val wv = webView ?: return@LaunchedEffect
+                wv.loadUrl(url)
             }
-
-            // After rymk-auth, the VM asks to return the WebView to the Bangumi origin so
-            // same-origin posting works again.
-            LaunchedEffect(vm.webViewReloadUrl) {
-                vm.webViewReloadUrl?.let { webView?.loadUrl(it); vm.onWebViewReloaded() }
+            LaunchedEffect(vm.webViewReloadUrl, webView) {
+                val url = vm.webViewReloadUrl ?: return@LaunchedEffect
+                val wv = webView ?: return@LaunchedEffect
+                wv.loadUrl(url)
+                vm.onWebViewReloaded()
             }
 
             CompositionLocalProvider(
@@ -187,8 +208,8 @@ private fun RedollarsApp(
                                         vm.noteSend("One sec — getting ready, try again")
                                     }
                                     else -> {
-                                        val body = vm.beginSend(text)
-                                        wv.evaluateJavascript(buildPostJs(body), null)
+                                        val (body, pid) = vm.beginSendWithId(text)
+                                        wv.evaluateJavascript(buildPostJs(body, pid), null)
                                     }
                                 }
                             },
@@ -215,6 +236,15 @@ private fun RedollarsApp(
 
                     if (vm.showLogin) {
                         FilledTonalIconButton(
+                            onClick = vm::retryAuth,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .statusBarsPadding()
+                                .padding(8.dp),
+                        ) {
+                            Icon(Icons.Filled.Refresh, contentDescription = "刷新登录页")
+                        }
+                        FilledTonalIconButton(
                             onClick = vm::dismissLogin,
                             modifier = Modifier
                                 .align(Alignment.TopEnd)
@@ -232,6 +262,17 @@ private fun RedollarsApp(
                     url = url,
                     onDismiss = { lightboxUrl = null },
                     onSaveSticker = { vm.addFavorite(url) },
+                    onDownload = {
+                        if (Build.VERSION.SDK_INT <= 28 &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                            PackageManager.PERMISSION_GRANTED
+                        ) {
+                            pendingDownloadUrl = url
+                            downloadLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            vm.downloadImage(url)
+                        }
+                    },
                 )
             }
         }
@@ -244,8 +285,9 @@ private fun RedollarsApp(
  * chii_auth / chii_sec_id cookies), with X-Requested-With; the browser adds cookies,
  * Origin, Referer and sec-fetch-* automatically.
  */
-private fun buildPostJs(text: String): String {
+private fun buildPostJs(text: String, pendingId: Long? = null): String {
     val msg = org.json.JSONObject.quote(text)
+    val pidField = if (pendingId != null) ", pendingId: $pendingId" else ""
     return """
         (function(){
           try {
@@ -259,10 +301,10 @@ private fun buildPostJs(text: String): String {
               body: 'message=' + encodeURIComponent($msg)
             })
             .then(function(r){ return r.text().then(function(t){
-              AndroidPost.deliver(JSON.stringify({ ok: r.ok, status: r.status, len: t.length, head: t.slice(0, 160) }));
+              AndroidPost.deliver(JSON.stringify({ ok: r.ok, status: r.status, url: r.url, len: t.length, head: t.slice(0, 160)$pidField }));
             }); })
-            .catch(function(e){ AndroidPost.deliver(JSON.stringify({ ok: false, status: -1, err: String(e) })); });
-          } catch (e) { AndroidPost.deliver(JSON.stringify({ ok: false, status: -2, err: String(e) })); }
+            .catch(function(e){ AndroidPost.deliver(JSON.stringify({ ok: false, status: -1, err: String(e)$pidField })); });
+          } catch (e) { AndroidPost.deliver(JSON.stringify({ ok: false, status: -2, err: String(e)$pidField })); }
         })();
     """.trimIndent()
 }

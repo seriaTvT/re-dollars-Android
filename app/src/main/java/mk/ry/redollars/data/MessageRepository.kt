@@ -16,18 +16,25 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import mk.ry.redollars.data.db.MessageDao
 import mk.ry.redollars.data.db.toDto
 import mk.ry.redollars.data.db.toEntity
 import mk.ry.redollars.di.ApplicationScope
 import kotlinx.coroutines.Job
+import kotlin.concurrent.Volatile
 import mk.ry.redollars.net.DollarsWs
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.ReactionDto
 import mk.ry.redollars.net.AppJson
+import mk.ry.redollars.net.AuthMeResult
+import mk.ry.redollars.net.Config
+import mk.ry.redollars.net.TokenLoginResult
 import mk.ry.redollars.net.GalleryResponse
 import mk.ry.redollars.net.RestApi
 import mk.ry.redollars.net.UploadApi
@@ -40,8 +47,13 @@ import kotlinx.serialization.builtins.serializer
 import mk.ry.redollars.net.WsEvent
 import mk.ry.redollars.net.WsUser
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/** Raw bytes + MIME type of an image fetched for local saving. */
+data class FetchedImage(val bytes: ByteArray, val mimeType: String?)
 
 /**
  * Single source of truth for chat messages. Room is authoritative; REST and the
@@ -54,7 +66,7 @@ import javax.inject.Singleton
 @Singleton
 class MessageRepository @Inject constructor(
     private val dao: MessageDao,
-    http: OkHttpClient,
+    private val http: OkHttpClient,
     private val prefs: SharedPreferences,
     @ApplicationScope private val scope: CoroutineScope,
 ) {
@@ -89,6 +101,18 @@ class MessageRepository @Inject constructor(
     /** What the UI filters by: local ∪ (site − app-side overrides). */
     private val _blockedUsers = MutableStateFlow(effectiveBlocked())
     val blockedUsers: StateFlow<Set<Long>> = _blockedUsers.asStateFlow()
+
+    fun clearAccountState() {
+        _favorites.value = emptyList()
+        _localBlocked.value = emptySet()
+        _siteBlocked.value = emptySet()
+        _siteUnblocked.value = emptySet()
+        _blockedUsers.value = emptySet()
+        _notifications.value = emptyList()
+        _typingUsers.value = emptyList()
+        displayLimit.value = INITIAL_WINDOW
+        ownUid = 0
+    }
 
     private fun effectiveBlocked(): Set<Long> =
         _localBlocked.value + (_siteBlocked.value - _siteUnblocked.value)
@@ -134,7 +158,10 @@ class MessageRepository @Inject constructor(
      * resolve to uids through the backend, behind a persistent username→uid cache
      * so repeat launches skip the network (initializeBlockedUsers in user.ts).
      */
+    private var ignoreListSeq = 0L
+    private var lastIgnoreListSeq = 0L
     fun setSiteIgnoreList(raw: List<String>) {
+        val seq = ++ignoreListSeq
         scope.launch {
             val uids = mutableSetOf<Long>()
             val cache = loadNameCache().toMutableMap()
@@ -148,8 +175,11 @@ class MessageRepository @Inject constructor(
                 }
             }
             if (unresolved.isNotEmpty()) {
-                val resolved = runCatching { rest.lookupUsersByName(unresolved) }
-                    .getOrDefault(emptyMap())
+                val resolved = runCatching { rest.lookupUsersByName(unresolved) }.getOrNull()
+                if (resolved == null) {
+                    log("Ignore list resolve failed — keeping previous list")
+                    return@launch
+                }
                 if (resolved.isNotEmpty()) {
                     uids.addAll(resolved.values)
                     cache.putAll(resolved)
@@ -157,11 +187,26 @@ class MessageRepository @Inject constructor(
                         .putString(PREF_NAME_CACHE, AppJson.encodeToString(nameCacheSerializer, cache))
                         .apply()
                 }
+                if (resolved.size < unresolved.size) {
+                    log("Ignore list partial resolve ${resolved.size}/${unresolved.size} — keeping previous for unresolved")
+                    val merged = _siteBlocked.value.toMutableSet()
+                    merged.addAll(uids)
+                    if (merged != _siteBlocked.value) {
+                        if (seq < lastIgnoreListSeq) return@launch
+                        lastIgnoreListSeq = seq
+                        _siteBlocked.value = merged
+                        persistUidSet(PREF_SITE_BLOCKED, merged)
+                        onBlockedChanged()
+                        log("Ignore list: ${merged.size} user(s) blocked via Bangumi (partial)")
+                    }
+                    return@launch
+                }
             }
+            if (seq < lastIgnoreListSeq) return@launch
+            lastIgnoreListSeq = seq
             if (uids != _siteBlocked.value) {
                 _siteBlocked.value = uids
                 persistUidSet(PREF_SITE_BLOCKED, uids)
-                // Overrides only make sense for users still on the site list.
                 val overrides = _siteUnblocked.value intersect uids
                 if (overrides != _siteUnblocked.value) {
                     _siteUnblocked.value = overrides
@@ -214,7 +259,8 @@ class MessageRepository @Inject constructor(
     private val _notifications = MutableStateFlow<List<NotificationItem>>(emptyList())
     val notifications: StateFlow<List<NotificationItem>> = _notifications.asStateFlow()
 
-    private val typingClearJobs = HashMap<Long, Job>()
+    // Touched from the WS reader thread and the app-scope coroutines alike.
+    private val typingClearJobs = ConcurrentHashMap<Long, Job>()
     private var ownUid = 0L
 
     /** (Re)identify the WebSocket as [uid]. Catch-up runs on the Status(true) transition.
@@ -231,13 +277,38 @@ class MessageRepository @Inject constructor(
     suspend fun fetchUserProfile(uid: Long): UserProfileDto? =
         runCatching { rest.getUser(uid) }.getOrNull()
 
+    /** Fetch raw image bytes + MIME type for the lightbox download button. */
+    suspend fun fetchImage(url: String): FetchedImage? = withContext(Dispatchers.IO) {
+        if (url.isBlank()) return@withContext null
+        runCatching {
+            val req = Request.Builder()
+                .url(url)
+                .header("User-Agent", Config.USER_AGENT)
+                .get()
+                .build()
+            http.newCall(req).execute().use { res ->
+                val body = res.body
+                if (!res.isSuccessful || body == null) null
+                else {
+                    val len = res.header("Content-Length")?.toLongOrNull()
+                    if (len != null && len > 10 * 1024 * 1024) null
+                    else {
+                        val bytes = body.bytes()
+                        if (bytes.size > 10 * 1024 * 1024) null
+                        else FetchedImage(bytes, res.header("Content-Type")?.substringBefore(';')?.trim())
+                    }
+                }
+            }
+        }.getOrNull()
+    }
+
     /** Mention autocomplete: users whose nickname/username matches [query]. */
     suspend fun searchUsers(query: String): List<UserSearchDto> =
         runCatching { rest.searchUsers(query) }.getOrDefault(emptyList())
 
-    /** Full-text message search (newest first). */
-    suspend fun searchMessages(query: String, offset: Int): List<MessageDto> =
-        runCatching { rest.searchMessages(query, offset) }.getOrDefault(emptyList())
+    /** Full-text message search (newest first). Null on network failure (retryable). */
+    suspend fun searchMessages(query: String, offset: Int): List<MessageDto>? =
+        runCatching { rest.searchMessages(query, offset) }.getOrNull()
 
     /** One page of the chat media wall. */
     suspend fun fetchGallery(offset: Int): GalleryResponse? =
@@ -287,7 +358,12 @@ class MessageRepository @Inject constructor(
 
     /** Upload an image to the upload server. [filePart] streams and carries the mime. */
     suspend fun uploadImage(filePart: okhttp3.RequestBody, fileName: String): UploadResult =
-        uploads.uploadImage(filePart, fileName, authToken?.takeIf { jwtPattern.matches(it) })
+        uploads.uploadImage(
+            filePart,
+            fileName,
+            uploadAuthToken?.takeIf { jwtPattern.matches(it) }
+                ?: authToken?.takeIf { jwtPattern.matches(it) },
+        )
 
     /** Upload any non-image file (voice, video, documents) — no auth needed. */
     suspend fun uploadFile(filePart: okhttp3.RequestBody, fileName: String): UploadResult =
@@ -298,6 +374,7 @@ class MessageRepository @Inject constructor(
     private val _onlineUsers = MutableStateFlow<Set<Long>>(emptySet())
     val onlineUsers: StateFlow<Set<Long>> = _onlineUsers.asStateFlow()
 
+    @Volatile
     private var presenceSubscribed = setOf<Long>()
 
     /** Diff-subscribe to [want]; the server then answers a query and pushes updates. */
@@ -338,23 +415,173 @@ class MessageRepository @Inject constructor(
 
     // ---- Backend auth token (long-lived Bearer; unlocks edit/delete) ----
 
+    @Volatile
     private var authToken: String? = prefs.getString(PREF_AUTH_TOKEN, null)
+    @Volatile
+    private var uploadAuthToken: String? = prefs.getString(PREF_UPLOAD_AUTH_TOKEN, null)
+    @Volatile
+    private var authRevision = 0L
+    private val authMutex = Mutex()
 
+    @Synchronized
     fun setAuthToken(token: String?) {
+        val wasNull = authToken == null
+        authRevision++
         authToken = token
         prefs.edit().putString(PREF_AUTH_TOKEN, token).apply()
+        // If token became valid after being null, ensure WS is re-identified
+        if (wasNull && token != null && ownUid != 0L) {
+            ws.connect(ownUid, null, null)
+        }
     }
 
-    /** True when the stored token is valid on the backend AND belongs to [expectUid].
-     *  An invalid/mismatched token is dropped so we re-run OAuth next login. */
-    suspend fun validateAuthToken(expectUid: Long): Boolean {
-        val token = authToken ?: return false
-        val user = runCatching { rest.authMe(token) }.getOrNull()
-        if (user != null && user.id == expectUid) return true
-        // Distinguish "backend said no" from network failure: only drop on a real no.
-        if (user != null) setAuthToken(null)
-        return false
+    /** Persist the rymk-auth JWT separately for upload. The RD backend token
+     * returned by /auth/token-login is opaque and must not be sent to up.ry.mk. */
+    @Synchronized
+    fun setUploadAuthToken(token: String?) {
+        uploadAuthToken = token
+        prefs.edit().putString(PREF_UPLOAD_AUTH_TOKEN, token).apply()
     }
+
+    /** Clear both backend and upload credentials. */
+    @Synchronized
+    fun clearAuthTokens() {
+        setAuthToken(null)
+        setUploadAuthToken(null)
+    }
+
+    /** Whether the currently persisted token still looks like the rymk-auth JWT
+     * that can be upgraded through /auth/token-login. */
+    @Synchronized
+    fun hasStoredRymkToken(): Boolean = authToken?.isJwtLike() == true
+
+    @Synchronized
+    private fun authSnapshot(): Pair<String?, Long> = authToken to authRevision
+
+    @Synchronized
+    private fun isCurrentAuthRevision(revision: Long): Boolean = authRevision == revision
+
+    private fun String.isJwtLike(): Boolean {
+        val parts = split('.')
+        return parts.size == 3 && parts.all { it.isNotBlank() }
+    }
+
+    /** Outcome of validating the stored backend token against /auth/me. */
+    enum class AuthValidation { Valid, Invalid, NetworkError }
+
+    /** Run token-login with bounded exponential backoff. An explicit rejection is
+     * definitive; transport/server failures remain retryable. */
+    private suspend fun tokenLoginWithRetry(token: String, maxRetries: Int): TokenLoginResult {
+        var attempt = 0
+        var delayMs = 1000L
+        while (true) {
+            when (val result = rest.tokenLogin(token)) {
+                TokenLoginResult.Invalid -> return result
+                is TokenLoginResult.Valid -> return result
+                TokenLoginResult.Error -> {
+                    if (attempt >= maxRetries) return result
+                    attempt++
+                    val jitter = kotlin.random.Random.nextLong(0, 1000) +
+                        kotlin.random.Random.nextLong(0, (delayMs / 2).coerceAtLeast(1L))
+                    kotlinx.coroutines.delay(delayMs + jitter)
+                    delayMs = (delayMs * 2 + kotlin.random.Random.nextLong(0, 1000)).coerceAtMost(16_000L)
+                }
+            }
+        }
+    }
+
+    /** Exchange a freshly captured rymk-auth JWT for the backend's long-lived
+     * local token. On a transport failure the JWT is persisted as a fallback so
+     * the caller can still validate it directly and retry the upgrade later. */
+    suspend fun exchangeRymkToken(token: String, maxRetries: Int = 3): TokenLoginResult =
+        authMutex.withLock {
+            // Persist the captured JWT before the network exchange so a process
+            // death during token-login still has a recoverable credential.
+            setAuthToken(token)
+            if (token.isJwtLike()) setUploadAuthToken(token)
+            val (_, revision) = authSnapshot()
+            when (val result = tokenLoginWithRetry(token, maxRetries)) {
+                is TokenLoginResult.Valid -> {
+                    if (isCurrentAuthRevision(revision)) setAuthToken(result.token)
+                    result
+                }
+                TokenLoginResult.Invalid -> {
+                    if (isCurrentAuthRevision(revision)) clearAuthTokens()
+                    result
+                }
+                TokenLoginResult.Error -> {
+                    if (isCurrentAuthRevision(revision)) setAuthToken(token)
+                    result
+                }
+            }
+        }
+
+    /** Silently upgrade a persisted rymk-auth JWT on app restart. A local token
+     * is already durable and needs no exchange. */
+    suspend fun upgradeStoredRymkToken(maxRetries: Int = 3): TokenLoginResult? =
+        authMutex.withLock {
+            val (token, revision) = authSnapshot()
+            val jwt = token?.takeIf { it.isJwtLike() } ?: return@withLock null
+            if (isCurrentAuthRevision(revision)) setUploadAuthToken(jwt)
+            when (val result = tokenLoginWithRetry(jwt, maxRetries)) {
+                is TokenLoginResult.Valid -> {
+                    if (isCurrentAuthRevision(revision)) setAuthToken(result.token)
+                    result
+                }
+                TokenLoginResult.Invalid -> {
+                    if (isCurrentAuthRevision(revision)) clearAuthTokens()
+                    result
+                }
+                TokenLoginResult.Error -> result
+            }
+        }
+
+    private suspend fun validateAuthTokenUnlocked(expectUid: Long): AuthValidation {
+        val (token, revision) = authSnapshot()
+        token ?: return AuthValidation.Invalid
+        return when (val r = rest.authMe(token)) {
+            is AuthMeResult.Valid -> {
+                if (expectUid != 0L && r.user.id != 0L && r.user.id != expectUid) {
+                    log("Auth uid mismatch: token uid=${r.user.id} vs expect $expectUid, treating as Valid and will reconcile")
+                }
+                AuthValidation.Valid
+            }
+            AuthMeResult.Invalid -> {
+                if (isCurrentAuthRevision(revision)) clearAuthTokens()
+                AuthValidation.Invalid
+            }
+            AuthMeResult.Error -> AuthValidation.NetworkError
+        }
+    }
+
+    /** Validate the stored token: Valid when backend confirms it. A mismatch is
+     * logged but remains valid for compatibility with the existing uid namespace
+     * handling; only an explicit backend rejection clears the token. */
+    suspend fun validateAuthToken(expectUid: Long): AuthValidation = authMutex.withLock {
+        validateAuthTokenUnlocked(expectUid)
+    }
+
+    /** Validate with exponential backoff retry for transient network errors. Keeps token on final NetworkError. */
+    suspend fun validateAuthTokenWithRetry(expectUid: Long, maxRetries: Int = 3): AuthValidation =
+        authMutex.withLock {
+            var attempt = 0
+            var delayMs = 1000L
+            var finalResult: AuthValidation
+            while (true) {
+                val result = validateAuthTokenUnlocked(expectUid)
+                if (result != AuthValidation.NetworkError || attempt >= maxRetries) {
+                    finalResult = result
+                    break
+                }
+                attempt++
+                // Full jitter + decorrelated
+                val jitter = kotlin.random.Random.nextLong(0, 1000) +
+                    kotlin.random.Random.nextLong(0, (delayMs / 2).coerceAtLeast(1L))
+                kotlinx.coroutines.delay(delayMs + jitter)
+                delayMs = (delayMs * 2 + kotlin.random.Random.nextLong(0, 1000)).coerceAtMost(16_000L)
+            }
+            finalResult
+        }
 
     // ---- FCM push ----
 
@@ -365,8 +592,22 @@ class MessageRepository @Inject constructor(
      *  the OAuth token exists; called again on every auth-ready and token rotation. */
     suspend fun registerPushToken(fcmToken: String) {
         val token = authToken ?: return
-        val ok = runCatching { rest.registerPush(fcmToken, token) }.getOrDefault(false)
-        log(if (ok) "Push token registered" else "Push token registration failed")
+        // Retry with backoff for transient failures, decoupled from main auth flow
+        var attempt = 0
+        var delayMs = 1000L
+        while (attempt < 3) {
+            val ok = runCatching { rest.registerPush(fcmToken, token) }.getOrDefault(false)
+            if (ok) {
+                log("Push token registered")
+                return
+            }
+            attempt++
+            if (attempt < 3) {
+                kotlinx.coroutines.delay(delayMs + kotlin.random.Random.nextLong(0, 500))
+                delayMs *= 2
+            }
+        }
+        log("Push token registration failed after retries")
     }
 
     /** Edit own message; Room is patched immediately, the WS echo re-enriches it. */
@@ -399,6 +640,7 @@ class MessageRepository @Inject constructor(
     }
 
     private val syncMutex = Mutex()
+    private val reactionMutex = Mutex()
 
     /**
      * Catch up on everything newer than the highest cached id. The backend caps each
@@ -467,13 +709,31 @@ class MessageRepository @Inject constructor(
      * visible. Cache-first: only hits REST when the cache runs out. Returns the number
      * of additional rows now available, or -1 when history is exhausted.
      */
+    suspend fun jumpToMessage(targetId: Long): Boolean {
+        return try {
+            val before = rest.fetchHistory(targetId + PAGE_SIZE, PAGE_SIZE).orEmpty()
+            val after = runCatching { rest.fetchNewer(targetId - 1, PAGE_SIZE) }.getOrDefault(emptyList())
+            val window = (before + after).sortedBy { it.id }
+            if (window.isEmpty()) return false
+            dao.replaceAll(window.map { it.toEntity() })
+            displayLimit.value = INITIAL_WINDOW.coerceAtLeast(window.size + 20)
+            true
+        } catch (_: Exception) { false }
+    }
+
     suspend fun loadOlder(beforeId: Long): Int {
         val cached = dao.countOlderThan(beforeId)
         if (cached >= PAGE_SIZE) {
             displayLimit.value += PAGE_SIZE
             return PAGE_SIZE
         }
-        val fetched = runCatching { rest.fetchHistory(beforeId, PAGE_SIZE) }.getOrDefault(emptyList())
+        // Null = fetch failed (network etc.): report 0 so the UI can retry. -1 is
+        // reserved for a real end of history and must not fire on a transient error.
+        val fetched = rest.fetchHistory(beforeId, PAGE_SIZE)
+        if (fetched == null) {
+            log("History: fetch failed before id=$beforeId (cached older=$cached)")
+            return 0
+        }
         if (fetched.isNotEmpty()) dao.upsertAll(fetched.map { it.toEntity() })
         log("History: +${fetched.size} fetched before id=$beforeId (cached older=$cached)")
         val available = cached + fetched.size
@@ -526,7 +786,14 @@ class MessageRepository @Inject constructor(
             }
             is WsEvent.OnlineCount -> _onlineCount.value = event.count
             is WsEvent.NewMessages -> {
-                scope.launch { dao.upsertAll(event.messages.map { it.toEntity() }) }
+                scope.launch { reactionMutex.withLock {
+                    val filtered = mutableListOf<mk.ry.redollars.data.db.MessageEntity>()
+                    for (m in event.messages) {
+                        val existing = dao.getById(m.id)
+                        if (existing?.isDeleted != true) filtered.add(m.toEntity())
+                    }
+                    if (filtered.isNotEmpty()) dao.upsertAll(filtered)
+                } }
                 // A delivered message implies its author stopped typing.
                 for (m in event.messages) clearTyping(m.uid)
             }
@@ -553,9 +820,13 @@ class MessageRepository @Inject constructor(
                 for ((id, active) in event.users) if (active) current.add(id) else current.remove(id)
                 _onlineUsers.value = current
             }
-            is WsEvent.MessageDeleted -> scope.launch { dao.markDeleted(event.messageId) }
+            is WsEvent.MessageDeleted -> scope.launch { reactionMutex.withLock { dao.markDeleted(event.messageId) } }
             is WsEvent.MessageEdited -> scope.launch {
-                dao.upsertAll(listOf(event.message.toEntity()))
+                reactionMutex.withLock {
+                    val existing = dao.getById(event.message.id)
+                    if (existing?.isDeleted == true) return@withLock
+                    dao.upsertAll(listOf(event.message.toEntity()))
+                }
             }
             is WsEvent.Log -> log(event.line)
         }
@@ -564,8 +835,8 @@ class MessageRepository @Inject constructor(
     private suspend fun patchReactions(
         messageId: Long,
         transform: (List<ReactionDto>) -> List<ReactionDto>,
-    ) {
-        val row = dao.getById(messageId) ?: return // not cached; next fetch carries them
+    ) = reactionMutex.withLock {
+        val row = dao.getById(messageId) ?: return@withLock
         val dto = row.toDto()
         dao.upsertAll(listOf(dto.copy(reactions = transform(dto.reactions)).toEntity()))
     }
@@ -616,6 +887,7 @@ class MessageRepository @Inject constructor(
         /** Backfill at most this many pages before jumping to the live tail instead. */
         const val MAX_CATCHUP_PAGES = 5
         const val PREF_AUTH_TOKEN = "dollars_auth_token"
+        const val PREF_UPLOAD_AUTH_TOKEN = "dollars_upload_auth_token"
         const val PREF_FAVORITES = "sticker_favorites"
         const val PREF_BLOCKED = "blocked_users"
         /** Resolved uids from Bangumi's data_ignore_users (refreshed on each harvest). */
