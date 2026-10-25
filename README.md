@@ -48,9 +48,10 @@ posting goes directly to Bangumi using your logged-in session, the same way the
 ## Authentication
 
 There's no separate account system — login happens inside an in-app WebView against Bangumi
-itself (`bgm.tv`), and posting reuses that browser session (cookies + `formhash`). A second,
-one-time login via [rymk-auth](https://auth.ry.mk) obtains a backend JWT, needed for reactions,
-edit/delete, read state, uploads, and push registration. See §3 of the spec for details.
+itself (`bgm.tv`), and posting uses native HTTP with saved session cookies and User-Agent.
+Upgrading from the WebView-posting version requires logging in once to save these credentials.
+A second, one-time login via [rymk-auth](https://auth.ry.mk) obtains a backend JWT, needed for
+reactions, edit/delete, read state, uploads, and push registration. See §3 of the spec for details.
 
 ## Architecture
 

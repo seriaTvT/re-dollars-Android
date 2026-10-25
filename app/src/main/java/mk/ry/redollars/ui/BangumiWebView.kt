@@ -94,7 +94,7 @@ private const val AUTH_ORIGIN = "https://auth.ry.mk"
 
 /** Hosts this WebView may navigate to: the Bangumi mirrors (login, posting, the OAuth
  *  chain) and the rymk-auth server. Everything else leaves for the real browser, so a
- *  foreign page never runs with the AndroidPost/AndroidAuth bridges or the logged-in
+ *  foreign page never runs with the AndroidAuth bridge or the logged-in
  *  Bangumi cookie jar attached. */
 private val ALLOWED_NAV_HOSTS = setOf("bgm.tv", "bangumi.tv", "chii.in", "auth.ry.mk")
 
@@ -142,12 +142,6 @@ private fun parseAuthMessage(raw: String): AuthMessage? {
     )
 }
 
-/** Bridge so the in-page fetch() can report its async result back to Kotlin. */
-private class PostBridge(private val cb: (String) -> Unit) {
-    @JavascriptInterface
-    fun deliver(json: String) = cb(json)
-}
-
 /** Bridge for the rymk-auth flow. [onMessage] receives the postMessage payload from the
  *  opener shim; [onDiag] surfaces the shim's own trace into the debug log. Both fire on a
  *  JS/binder thread, so the ViewModel marshals onto Main before touching state. */
@@ -162,12 +156,7 @@ private class AuthBridge(
     fun log(msg: String) = onDiag(msg)
 }
 
-/**
- * Single persistent Bangumi WebView. Full-screen while [visible] (login / rymk-auth);
- * otherwise kept alive off-screen so messages can be POSTed *same-origin* from the real
- * logged-in session (see MainActivity.buildPostJs). This mirrors the userscript, whose
- * fetch to `/dollars?ajax=1` succeeds precisely because it runs on the Bangumi origin.
- */
+/** Interactive Bangumi/rymk login; destroyed when the overlay closes. */
 @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
 fun BangumiWebView(
@@ -175,7 +164,7 @@ fun BangumiWebView(
     onCreated: (WebView) -> Unit,
     onResult: (SessionInfo) -> Unit,
     onLog: (String) -> Unit,
-    onPostResult: (String) -> Unit,
+    onCookies: (String, String) -> Unit,
     onAuthToken: (String, String?) -> Unit = { _, _ -> },
     onIgnoreList: (List<String>) -> Unit = {},
     modifier: Modifier = Modifier,
@@ -190,7 +179,6 @@ fun BangumiWebView(
                 cm.setAcceptThirdPartyCookies(this, true)
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
-                addJavascriptInterface(PostBridge(onPostResult), "AndroidPost")
                 addJavascriptInterface(
                     AuthBridge(
                         onMessage = { raw ->
@@ -246,11 +234,7 @@ fun BangumiWebView(
                     }
 
                     override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
-                        // A fresh login always (re)starts at the Bangumi login page — logout
-                        // navigates this persistent WebView there. Reset the one-shot session
-                        // probe so a re-login is detected again; without this, `done` stays
-                        // latched from the first login and onPageFinished skips the re-login
-                        // (the WebView is no longer recreated between logins).
+                        // A login navigation starts a fresh identity probe.
                         if (url != null && url.startsWith("${Config.BGM_HOST}/login")) done = false
                         // Trace the OAuth redirect chain so a stall (bgm.tv second login,
                         // Cloudflare interstitial, unexpected page) is visible in the log.
@@ -273,7 +257,7 @@ fun BangumiWebView(
                             view.evaluateJavascript(OPENER_SHIM_JS, null)
                         }
                         // Harvest the site ignore list from any logged-in Bangumi page
-                        // (also after `done`: the post-auth reload to /dollars lands here).
+                        // before completing the interactive login.
                         if (url != null && url.startsWith(Config.BGM_HOST) && !url.contains("/oauth/")) {
                             view.evaluateJavascript(IGNORE_JS) { raw ->
                                 parseIgnoreList(raw)?.let(onIgnoreList)
@@ -292,7 +276,10 @@ fun BangumiWebView(
                             // doesn't need it), so we complete as soon as we know the uid.
                             val uid = parsed.uid ?: return@evaluateJavascript
                             done = true
-                            CookieManager.getInstance().flush()
+                            CookieManager.getInstance().apply {
+                                onCookies(getCookie(Config.DOLLARS_URL).orEmpty(), view.settings.userAgentString)
+                                flush()
+                            }
                             val fhNote = parsed.formhash?.let { ", formhash=${it.take(8)}…" } ?: ""
                             onLog("Logged in: uid=$uid$fhNote")
                             onResult(SessionInfo(uid, parsed.name ?: uid.toString(), parsed.formhash ?: ""))

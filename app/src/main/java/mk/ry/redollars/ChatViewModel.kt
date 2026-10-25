@@ -21,13 +21,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import mk.ry.redollars.data.MessageRepository
-import mk.ry.redollars.net.AppJson
 import mk.ry.redollars.net.MessageDto
 import mk.ry.redollars.net.NotificationItem
 import mk.ry.redollars.net.UploadResult
@@ -56,13 +50,9 @@ data class VoiceDraft(
 @HiltViewModel
 class ChatViewModel @Inject constructor(
     private val repo: MessageRepository,
+    private val bangumiApi: mk.ry.redollars.net.BangumiApi,
     @param:ApplicationContext private val appContext: Context,
 ) : ViewModel() {
-
-    private val sessionHintPrefs =
-        appContext.getSharedPreferences("session_hint", Context.MODE_PRIVATE)
-    /** True if login completed on a previous launch; drives silent auto-login on open. */
-    val hadPriorSession: Boolean = sessionHintPrefs.getBoolean("had_session", false)
 
     // ---- Observable state from the repository ----
     val messages: StateFlow<List<MessageDto>> =
@@ -126,10 +116,6 @@ class ChatViewModel @Inject constructor(
     var authReady by mutableStateOf(false); private set
     /** Non-null asks the host to load the rymk-auth start URL in the login WebView. */
     var oauthRequestUrl by mutableStateOf<String?>(null); private set
-    /** Non-null asks the host to reload the shared WebView to this URL — used to return
-     *  it to the Bangumi origin after rymk-auth navigated it away, so same-origin
-     *  posting works again. */
-    var webViewReloadUrl by mutableStateOf<String?>(null); private set
     /** Per-request nonce for the in-flight rymk-auth popup; the returned token's `state`
      *  must match it or we reject the message. */
     private var authNonce: String? = null
@@ -140,7 +126,8 @@ class ChatViewModel @Inject constructor(
     data class EditingState(val id: Long, val hiddenQuote: String?)
 
     private var started = false
-    private var pendingText = ""
+    private var authGeneration = 0L
+    private var loginJob: Job? = null
 
     init {
         viewModelScope.launch { repo.logs.collect { log(it) } }
@@ -167,7 +154,12 @@ class ChatViewModel @Inject constructor(
     fun start() {
         if (started) return
         started = true
-        repo.connect(uid = 0) // anonymous read connection until the user logs in
+        repo.connect(uid = 0) // reading does not require a website session
+        val generation = authGeneration
+        viewModelScope.launch {
+            val restored = bangumiApi.restoreSession()
+            if (generation == authGeneration && session == null && restored != null) onLoggedIn(restored)
+        }
     }
 
     fun onLoggedIn(info: SessionInfo) {
@@ -177,10 +169,13 @@ class ChatViewModel @Inject constructor(
         // this probe. Restarting would mint a fresh nonce and get the returning JWT
         // rejected as a state mismatch, so ignore the re-detection and let it finish.
         if (authNonce != null && session?.uid == info.uid) return
+        authGeneration++
+        val generation = authGeneration
         session = info
-        // Remember we have a session so future launches auto-login silently on open.
-        sessionHintPrefs.edit().putBoolean("had_session", true).apply()
-        viewModelScope.launch {
+        authReady = false
+        loginJob?.cancel()
+        loginJob = viewModelScope.launch {
+            bangumiApi.saveSession(info)
             // The page-extracted name is the login slug (or a uid fallback), NOT the
             // display nickname — resolve the real one from the backend profile cache
             // before joining, or other clients would show the wrong name for our
@@ -188,6 +183,7 @@ class ChatViewModel @Inject constructor(
             val profile = repo.fetchUserProfile(info.uid)
             val nickname = profile?.nickname?.takeIf { it.isNotBlank() } ?: info.name
             val avatar = profile?.avatar?.let { it.medium ?: it.large ?: it.small }
+            if (generation != authGeneration) return@launch
             session = info.copy(name = nickname)
             log("Session ready: uid=${info.uid} nickname=$nickname (profile=${profile != null})")
             // Re-identify + join (share presence) so our typing/presence is attributed.
@@ -197,7 +193,9 @@ class ChatViewModel @Inject constructor(
             // drive the rymk-auth flow in the login WebView, which must be visible so the
             // user can complete the bgm.tv login/authorize it redirects through. The
             // captured JWT is delivered back via onAuthToken.
-            if (repo.validateAuthToken(info.uid)) {
+            val valid = repo.validateAuthToken(info.uid)
+            if (generation != authGeneration) return@launch
+            if (valid) {
                 authReady = true
                 showLogin = false
                 log("Backend auth ready (stored token)")
@@ -222,14 +220,14 @@ class ChatViewModel @Inject constructor(
                 log("rymk-auth: ignoring token with mismatched state")
                 return@launch
             }
+            val generation = authGeneration
             authNonce = null
             oauthRequestUrl = null
             repo.setAuthToken(token)
-            authReady = repo.validateAuthToken(session?.uid ?: 0)
+            val valid = repo.validateAuthToken(session?.uid ?: 0)
+            if (generation != authGeneration) return@launch
+            authReady = valid
             showLogin = false
-            // rymk-auth left the shared WebView on bgm.tv/auth.ry.mk; return it to the
-            // Bangumi origin so buildPostJs's same-origin fetch works.
-            webViewReloadUrl = mk.ry.redollars.net.Config.DOLLARS_URL
             log("Backend auth ${if (authReady) "ready (rymk JWT)" else "validation FAILED"}")
             if (authReady) registerPush()
         }
@@ -238,41 +236,38 @@ class ChatViewModel @Inject constructor(
     /** Bangumi's data_ignore_users as harvested from a logged-in WebView page. */
     fun onIgnoreUsers(list: List<String>) = repo.setSiteIgnoreList(list)
 
-    /** Host consumed [webViewReloadUrl] (reloaded the WebView); clear the request. */
-    fun onWebViewReloaded() {
-        webViewReloadUrl = null
-    }
+    /** Capture the website credentials before closing the interactive WebView. */
+    fun onBangumiCookies(header: String, userAgent: String) = bangumiApi.captureCookies(header, userAgent)
 
-    /** Sign out: drop the backend token, forget the session hint (so the next launch
-     *  won't silently auto-login), clear Bangumi cookies so the WebView session is gone,
-     *  reset the shared WebView to a logged-out page, and fall back to the anonymous
-     *  read connection. Posting/edit/delete lock again until the user logs back in. */
+    /** Drop both native credentials and the interactive browser session. */
     fun logout() {
+        authGeneration++
+        loginJob?.cancel()
         repo.setAuthToken(null)
-        sessionHintPrefs.edit().putBoolean("had_session", false).apply()
+        bangumiApi.clear()
         session = null
         authReady = false
         authNonce = null
         oauthRequestUrl = null
         showAccount = false
         showLogin = false
+        replyTo = null
+        editing = null
+        setComposer("")
+        discardVoiceDraft()
         val cm = android.webkit.CookieManager.getInstance()
-        cm.removeAllCookies(null)
-        cm.flush()
-        // Reset the shared WebView off the logged-in page so a later login starts clean.
-        webViewReloadUrl = "${mk.ry.redollars.net.Config.BGM_HOST}/login"
-        repo.connect(uid = 0) // back to anonymous read
+        cm.removeAllCookies { cm.flush() }
+        repo.connect(uid = 0)
         log("Logged out")
     }
 
-    /** User closed the login overlay; abandon any in-flight rymk-auth request. If a
-     *  Bangumi session already exists, return the WebView to the Bangumi origin so
-     *  posting still works (rymk-auth may have navigated it to bgm.tv/auth.ry.mk). */
+    /** Closing login abandons the in-flight authorization request. */
     fun dismissLogin() {
+        authGeneration++
+        loginJob?.cancel()
         showLogin = false
         oauthRequestUrl = null
         authNonce = null
-        if (session != null) webViewReloadUrl = mk.ry.redollars.net.Config.DOLLARS_URL
     }
 
     // ---- Composer typing signals: start immediately, stop after 2.5s idle or on send. ----
@@ -718,49 +713,60 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /**
-     * Called right before the WebView fires the in-page fetch. Returns the full
-     * outgoing body: replies are `[quote=<id>][/quote]<text>` (sendMessage.ts parity).
-     */
-    fun beginSend(text: String): String {
-        stopTyping()
-        val content = transformMentions(text)
-        // Voice rides along on its own line (sendMessage.ts attachVoice).
-        val voice = voiceDraft?.url?.let { "[audio]$it[/audio]" }
-        val merged = when {
-            voice == null -> content
-            content.isBlank() -> voice
-            else -> "$content\n$voice"
-        }
-        val body = replyTo?.let { "[quote=${it.id}][/quote]$merged" } ?: merged
-        replyTo = null
-        discardVoiceDraft()
-        setComposer("")
-        pendingText = body
-        setDebugStatus("Posting via WebView…")
-        return body
-    }
-
     fun noteSend(message: String) {
         sendStatus = message
     }
 
-    fun onWebPostResult(json: String) {
-        viewModelScope.launch(Dispatchers.Main.immediate) {
-            val obj = runCatching { AppJson.parseToJsonElement(json).jsonObject }.getOrNull()
-            val ok = obj?.get("ok")?.jsonPrimitive?.booleanOrNull ?: false
-            val status = obj?.get("status")?.jsonPrimitive?.intOrNull ?: -1
-            val head = obj?.get("head")?.jsonPrimitive?.contentOrNull.orEmpty().replace("\n", " ")
-            log("WebView POST -> ok=$ok status=$status head=${head.take(80)}")
-            if (!ok) {
-                sendStatus = "Post failed (status=$status)"
-                return@launch
+    var sending by mutableStateOf(false); private set
+
+    fun sendMessage(text: String) {
+        if (sending) return
+        val info = session ?: run { showLogin = true; return }
+        val draft = composerValue
+        val reply = replyTo
+        val voice = voiceDraft
+        stopTyping()
+        val content = transformMentions(text)
+        val audio = voice?.url?.let { "[audio]$it[/audio]" }
+        val merged = listOfNotNull(content.takeIf { it.isNotBlank() }, audio).joinToString("\n")
+        if (merged.isBlank()) return
+        val body = reply?.let { "[quote=${it.id}][/quote]$merged" } ?: merged
+        val generation = authGeneration
+        sending = true
+        sendStatus = "正在发送…"
+        viewModelScope.launch {
+            try {
+                when (val result = bangumiApi.post(body)) {
+                    mk.ry.redollars.net.PostResult.Sent -> {
+                        if (generation != authGeneration || session?.uid != info.uid) return@launch
+                        // Keep the draft until an explicit business success. Never erase newer edits.
+                        if (composerValue == draft) setComposer("")
+                        if (replyTo == reply) replyTo = null
+                        if (voiceDraft == voice) discardVoiceDraft()
+                        setDebugStatus("Posted; confirming…")
+                        val confirmed = confirmLoop(info.uid, body)
+                        if (generation == authGeneration) setDebugStatus(
+                            if (confirmed != null) "Confirmed (id=${confirmed.id})" else "Posted; awaiting WS echo",
+                        )
+                    }
+                    mk.ry.redollars.net.PostResult.LoginRequired -> {
+                        if (generation != authGeneration) return@launch
+                        bangumiApi.clear()
+                        session = null
+                        authReady = false
+                        showLogin = true
+                        sendStatus = "登录已过期，请重新登录后再发"
+                    }
+                    is mk.ry.redollars.net.PostResult.Failed -> {
+                        if (generation == authGeneration) {
+                            sendStatus = result.message
+                            if (result.requiresLogin) showLogin = true
+                        }
+                    }
+                }
+            } finally {
+                sending = false
             }
-            setDebugStatus("Posted; confirming…")
-            val confirmed = confirmLoop(session?.uid ?: 0, pendingText)
-            setDebugStatus(
-                if (confirmed != null) "Confirmed (id=${confirmed.id})" else "Posted; awaiting WS echo",
-            )
         }
     }
 
